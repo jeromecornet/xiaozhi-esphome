@@ -14,6 +14,7 @@ This is the version that will be developed going forward. For now, only a few se
 ## 📦 Devices Updated to `2026.9.0`
 
 * Spotpear Ball **v2**
+* Spotpear Ball **v2 Interactive** (Ball v2 with tuned sendspin stream/input handling)
 * Spotpear Ball **v3**
 * Spotpear Ball **v3 LOW** (lower cam resolution and no es7210)
 * Breadboard DIY **(240×320)**
