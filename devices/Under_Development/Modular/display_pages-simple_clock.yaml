@@ -1,0 +1,183 @@
+# display page: "Simple" clock (Ball v2 Interactive)
+#
+# Appended to the shared page list (display_pages-sendspin.yaml) by
+# clocks-ball_v2_interactive.yaml:
+#
+#   +----------------------------------+
+#   |  ▂▄▆█                    [##] 85% |   status row   (green, dim when no data)
+#   |                                  |
+#   |            12:34                 |   DSEG7 digits (yellow), max fit
+#   |                                  |
+#   |          MON 02 NOV              |   compact date (green)
+#   +----------------------------------+
+#
+# The panel is ROUND (GC9A01A, 240x240). Every element is placed with a
+# chord-width check: the usable width at vertical offset dy from the centre is
+# 2*sqrt(r^2 - dy^2) minus a margin, so nothing can ever reach the rim or be
+# clipped by the circular bezel. All geometry scales with min(W, H), so the
+# page also behaves on square or rectangular panels.
+      - id: simple_clock
+        lambda: |-
+          const int W = it.get_width();
+          const int H = it.get_height();
+          const int S = std::min(W, H);   // limiting dimension = diameter on a round panel
+          const int cx = W / 2;
+          const int cy = H / 2;
+          const int r  = S / 2;
+
+          const Color time_col   = id(simple_clock_time_color);
+          const Color accent_col = id(simple_clock_accent_color);
+          const Color dim_col    = accent_col * 60;   // ~24 % for "no data" states
+
+          it.fill(Color::BLACK);
+
+          const bool show_time = id(clock_show_time).state;
+          const bool show_date = id(clock_show_date).state;
+          const bool h24       = id(clock_24h).state;
+          const bool secs      = id(clock_show_seconds).state;
+
+          // ---------- round-safe usable width ----------
+          // Widest fully-visible line at vertical offset dy, minus a safety margin.
+          const int margin = std::max(2, S / 40);
+          auto chord_w = [&](int dy) -> int {
+            const int dyc = (dy > r) ? r : (dy < -r ? -r : dy);
+            const int hw  = (int) sqrtf((float) std::max(0, r * r - dyc * dyc));
+            return std::max(0, 2 * hw - 2 * margin);
+          };
+
+          // ---------- strings ----------
+          char timebuf[16];
+          char datebuf[40];
+          timebuf[0] = 0;
+          datebuf[0] = 0;
+
+          auto now = id(homeassistant_time).now();
+          const bool time_ok = now.is_valid();
+
+          if (time_ok) {
+            int hh = now.hour;
+            if (!h24) {
+              hh %= 12;
+              if (hh == 0) hh = 12;
+            }
+            if (secs)
+              snprintf(timebuf, sizeof(timebuf), "%02d:%02d:%02d", hh, now.minute, now.second);
+            else
+              snprintf(timebuf, sizeof(timebuf), "%02d:%02d", hh, now.minute);
+
+            // "Mon 02 Nov" -> "MON 02 NOV"
+            if (now.strftime(datebuf, sizeof(datebuf), "%a %d %b") == 0)
+              datebuf[0] = 0;
+            for (char *p = datebuf; *p != 0; ++p) {
+              if (*p >= 'a' && *p <= 'z')
+                *p = (char) (*p - 32);
+            }
+            // 12h mode: the meridiem marker lives on the date line (the DSEG
+            // font only carries digits/colon, and this keeps the big line clean)
+            if (!h24) {
+              const size_t len = strlen(datebuf);
+              snprintf(datebuf + len, sizeof(datebuf) - len, "%s",
+                       now.hour < 12 ? " AM" : " PM");
+            }
+          } else {
+            snprintf(timebuf, sizeof(timebuf), "%s", "--:--");
+          }
+
+          // ---------- status row ----------
+          // y = 18.5 % of the diameter from the top: high enough to read as a
+          // status line, low enough that the circle is still wide there.
+          const int row_dy   = -(int) (S * 0.315f);
+          const int row_y    = cy + row_dy;
+          const int half     = std::min((int) (S * 0.30f), chord_w(row_dy) / 2);
+          const int left_x   = cx - half;
+          const int right_x  = cx + half;
+
+          // Wi-Fi: four rising bars from the RSSI
+          {
+            const int bars = 4;
+            const int bmax = std::max(6, S / 30);
+            const int bw   = std::max(2, S / 60);
+            const int gap  = std::max(1, bw / 2);
+
+            int level = 0;
+            if (id(wifi_dbm).has_state()) {
+              const float dbm = id(wifi_dbm).state;
+              level = (dbm >= -55) ? 4 : (dbm >= -65) ? 3 : (dbm >= -75) ? 2 : (dbm >= -85) ? 1 : 0;
+            }
+
+            const int base_y = row_y + bmax / 2;
+            for (int i = 0; i < bars; i++) {
+              const int bh = bmax * (i + 1) / bars;
+              it.filled_rectangle(left_x + i * (bw + gap), base_y - bh, bw, bh,
+                                  (i < level) ? accent_col : dim_col);
+            }
+          }
+
+          // Battery: outline + proportional fill + "NN %", right aligned
+          if (id(show_battery_status).state) {
+            const int bh  = std::max(6, S / 34);
+            const int bw  = (int) (bh * 2.1f);
+            const int nub = std::max(2, bh / 3);
+            const int pad = std::max(1, bh / 5);
+
+            float pct = 0.0f;
+            const bool have_batt = id(battery_percentage).has_state();
+            if (have_batt) {
+              pct = id(battery_percentage).state;
+              if (pct < 0.0f) pct = 0.0f;
+              if (pct > 100.0f) pct = 100.0f;
+            }
+
+            char battxt[8];
+            if (have_batt)
+              snprintf(battxt, sizeof(battxt), "%.0f%%", pct);
+            else
+              snprintf(battxt, sizeof(battxt), "--");
+
+            int tw = 0, txo = 0, tbl = 0, th = 0;
+            id(font_battery)->measure(battxt, &tw, &txo, &tbl, &th);
+
+            const int gap_txt = std::max(2, S / 80);
+            const int x0      = right_x - (bw + nub + gap_txt + tw);
+            const int y0      = row_y - bh / 2;
+            const Color bc    = have_batt ? accent_col : dim_col;
+
+            it.rectangle(x0, y0, bw, bh, bc);
+            it.filled_rectangle(x0 + bw, y0 + (bh - std::max(2, bh / 2)) / 2,
+                                nub, std::max(2, bh / 2), bc);
+
+            if (have_batt) {
+              const int iw = bw - 2 * (pad + 1);
+              const int ih = bh - 2 * (pad + 1);
+              const int fw = (int) (iw * pct / 100.0f);
+              if (iw > 0 && ih > 0 && fw > 0)
+                it.filled_rectangle(x0 + pad + 1, y0 + pad + 1, fw, ih,
+                                    (pct <= 20.0f) ? Color(0xD0, 0x00, 0x00) : accent_col);
+            }
+
+            it.printf(x0 + bw + nub + gap_txt + tw / 2, row_y, id(font_battery), bc,
+                      TextAlign::CENTER, "%s", battxt);
+          }
+
+          // ---------- time: largest DSEG7 size that fits the centre chord ----------
+          if (show_time) {
+            const int max_w = std::min((int) (W * 0.92f), chord_w(0));
+            int w = 0, xo = 0, bl = 0, h = 0;
+            auto *tfont = id(font_clock_seg_small);
+            id(font_clock_seg_huge)->measure(timebuf, &w, &xo, &bl, &h);
+            if (w <= max_w) {
+              tfont = id(font_clock_seg_huge);
+            } else {
+              id(font_clock_seg_big)->measure(timebuf, &w, &xo, &bl, &h);
+              if (w <= max_w)
+                tfont = id(font_clock_seg_big);
+            }
+            it.printf(cx, cy - (int) (S * 0.005f), tfont,
+                      time_ok ? time_col : dim_col, TextAlign::CENTER, "%s", timebuf);
+          }
+
+          // ---------- date: small secondary label below the time ----------
+          if (show_date && datebuf[0] != 0) {
+            it.printf(cx, cy + (int) (S * 0.245f), id(font_big_date),
+                      time_ok ? accent_col : dim_col, TextAlign::CENTER, "%s", datebuf);
+          }

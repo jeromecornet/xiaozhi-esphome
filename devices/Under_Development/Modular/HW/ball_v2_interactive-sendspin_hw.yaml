@@ -9,7 +9,9 @@
 
 # --- CLOCKS & BUTTONS PACKAGE -------------------------------------------------
 packages:
-  clocks: !include ../clocks-standard.yaml
+  # variant-local copy of clocks-standard.yaml: adds the "Simple" clock style
+  # (DSEG7, yellow/green on black) and makes it the default.
+  clocks: !include ../clocks-ball_v2_interactive.yaml
 
 binary_sensor:
   # core already declares left_button (GPIO0, INPUT_PULLUP, inverted); only add

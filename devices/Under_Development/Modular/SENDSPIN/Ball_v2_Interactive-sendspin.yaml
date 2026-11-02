@@ -21,6 +21,8 @@ substitutions:
   ##   - left_button: no duplicated pin config, only the strapping-warning override
   ##   - tap on screen always exposed to HA (dead tap/pause stubs removed)
   ##   - touch long-press no longer depends on the "Handle swipes on device" switch
+  ##   - clock: new round-safe "Simple" style (DSEG7, yellow/green on black) is
+  ##     the default; the other clock styles stay selectable from HA
 
   ## SETTINGS ######################################################################################################################################
 
@@ -38,6 +40,12 @@ substitutions:
 
   # AlbertQuackmore, Alita, Alfred, Astrobot, Buzz, Casita, Cybergirl, Dory, EVE, Eyes, Eyes2, GLaDOS, Girl1, Guy1, Guy2, Gwen, HA-character, ha-girl, Hacker, Harley,
   # Jarvis, Luffy, Mario, Max, Prime, Robochibi, Robocop, Robot, Robotgirl, Salem, Sarah, Shaun
+
+  ## SIMPLE CLOCK PALETTE ######## "Simple" clock style (default) — DSEG7 on black ###########################################################
+  # 6-digit hex, no leading '#'. Swap the two values to invert the palette.
+
+  simple_clock_time_color: "ffc107" # big DSEG7 time digits (yellow)
+  simple_clock_accent_color: "26ed3a" # status row (wifi + battery) and date line (green)
 
   # USE ONLINE OR LOCAL MODEL AND WALLPAPER IMAGES, IMAGES SHOULD BE PLACED IN: homeassistant/www/images/
   imagepath: "https://github.com/jeromecornet/xiaozhi-esphome/raw/main/images"

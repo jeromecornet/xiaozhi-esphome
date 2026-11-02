@@ -1,0 +1,186 @@
+# Ball v2 "Interactive" — clock styles
+#
+# Copy of clocks-standard.yaml (same 11 styles, same wallpaper selector, same
+# local swipe actions) with a new "Simple" style added and used as the default.
+# The page body lives in display_pages-simple_clock.yaml.
+#
+# Simple: DSEG7 seven-segment digits, high-contrast yellow/green on black,
+# laid out for the ROUND 240x240 GC9A01A panel. It deliberately ignores the
+# "Clock Wallpaper" selector and the "Clock Color" wheel (fixed palette, see
+# the two substitutions in the device YAML) — every other style is unchanged
+# and still honours both.
+
+sensor:
+  # RSSI for the status row of the Simple clock; nothing else uses it.
+  - platform: wifi_signal
+    id: wifi_dbm
+    internal: true
+    update_interval: 30s
+
+color:
+  # ${simple_clock_time_color} / ${simple_clock_accent_color} are set in the
+  # device YAML (SETTINGS section) so the palette can be changed without
+  # touching code.
+  - id: simple_clock_time_color
+    hex: ${simple_clock_time_color}
+  - id: simple_clock_accent_color
+    hex: ${simple_clock_accent_color}
+
+font:
+  # DSEG7 Classic MINI Bold — compact (condensed) seven-segment font,
+  # SIL Open Font License 1.1. Only the glyphs the clock can use are
+  # rasterised, which keeps this at a few kB per size.
+  # The 3 sizes are the runtime ladder: the page measures the string and picks
+  # the largest one that still fits the circle's chord at the centre.
+  - file: https://cdn.jsdelivr.net/npm/dseg@0.46.0/fonts/DSEG7-Classic-MINI/DSEG7ClassicMini-Bold.ttf
+    id: font_clock_seg_huge
+    size: 60
+    glyphs: "0123456789:-"
+  - file: https://cdn.jsdelivr.net/npm/dseg@0.46.0/fonts/DSEG7-Classic-MINI/DSEG7ClassicMini-Bold.ttf
+    id: font_clock_seg_big
+    size: 38
+    glyphs: "0123456789:-"
+  - file: https://cdn.jsdelivr.net/npm/dseg@0.46.0/fonts/DSEG7-Classic-MINI/DSEG7ClassicMini-Bold.ttf
+    id: font_clock_seg_small
+    size: 26
+    glyphs: "0123456789:-"
+
+display:
+  # Append the Simple page to the page list provided by the HW pack
+  # (display_pages-sendspin.yaml). List keys are appended on package merge,
+  # so nothing existing is replaced.
+  - id: !extend main_display
+    pages: !include display_pages-simple_clock.yaml
+
+select:
+  - platform: template
+    entity_category: config
+    name: "Clock Style"
+    id: clock_style
+    icon: "mdi:clock-digital"
+    optimistic: true
+    restore_value: true
+    options:
+      - Simple
+      - 7-segment
+      - Flip
+      - Default
+      - Presence
+      - Weather
+      - Small
+      - Analog
+      - Wide
+      - Alarmstyle
+      - Big
+      - Xiaozhi
+    initial_option: Simple
+    on_value:
+      - if:
+          condition:
+            lambda: return id(show_clock);
+          then:
+            - script.execute: show_clock_page
+
+  - platform: template
+    entity_category: config
+    name: "Clock Wallpaper (Online)"
+    id: clock_wallpaper_image
+    icon: "mdi:image"
+    optimistic: true
+    restore_value: true
+    options:
+      - clock
+      - hacker
+      - mission
+      - neonwaves
+      - redmarble
+      - Rolex
+      - starrysky
+      - waves
+      - tron
+      - chip
+      - waterdrops
+    initial_option: ${clock_background_image}
+    on_value:
+      - online_image.set_url:
+          id: clock_background
+          url: !lambda |-
+            std::string base = "${imagepath}/Other/"
+                               "${screenwidth}x${screenheight}/";
+            return base + std::string(x) + ".png";
+          update: true
+      - component.update: main_display
+
+script:
+  - id: show_clock_page
+    then:
+      - lambda: |-
+          const std::string sel = id(clock_style).current_option();
+          if (sel == "Simple") {
+            id(main_display).show_page(simple_clock);
+          } else if (sel == "Default") {
+            id(main_display).show_page(default_clock);
+          } else if (sel == "Flip") {
+            id(main_display).show_page(flip_clock);
+          } else if (sel == "Presence") {
+            id(main_display).show_page(presence_sensor_clock);
+          } else if (sel == "Weather") {
+            id(main_display).show_page(weather_clock);
+          } else if (sel == "Small") {
+            id(main_display).show_page(small_clock);
+          } else if (sel == "Analog") {
+            id(main_display).show_page(analog_clock);
+          } else if (sel == "Wide") {
+            id(main_display).show_page(wide_clock);
+          } else if (sel == "Alarmstyle") {
+            id(main_display).show_page(alarmstyle_clock);
+          } else if (sel == "Big") {
+            id(main_display).show_page(big_clock);
+          } else if (sel == "Xiaozhi") {
+            id(main_display).show_page(xiaozhi_clock);
+          } else {
+            id(main_display).show_page(clock_7segment);
+          }
+          id(main_display).update();
+
+  - id: swipe_left_action   # next clock style
+    then:
+      - lambda: |-
+          static const char* const opts[] = {
+            "Simple","7-segment","Flip","Default","Presence","Weather","Small","Analog","Wide","Alarmstyle","Big","Xiaozhi"
+          };
+          const int N = sizeof(opts)/sizeof(opts[0]);
+          std::string cur = id(clock_style).current_option();
+          int idx = 0;
+          for (int i = 0; i < N; i++) if (cur == opts[i]) { idx = i; break; }
+          int next = (idx + 1) % N;
+          id(clock_style).publish_state(opts[next]);
+
+  - id: swipe_right_action  # previous clock style
+    then:
+      - lambda: |-
+          static const char* const opts[] = {
+            "Simple","7-segment","Flip","Default","Presence","Weather","Small","Analog","Wide","Alarmstyle","Big","Xiaozhi"
+          };
+          const int N = sizeof(opts)/sizeof(opts[0]);
+          std::string cur = id(clock_style).current_option();
+          int idx = 0;
+          for (int i = 0; i < N; i++) if (cur == opts[i]) { idx = i; break; }
+          int prev = (idx - 1 + N) % N;
+          id(clock_style).publish_state(opts[prev]);
+
+  - id: swipe_up_action     # next wallpaper (cycle)
+    then:
+      - lambda: |-
+          static const char* const opts[] = { "clock","hacker","mission","neonwaves","redmarble","Rolex","starrysky","waves","tron","chip", "waterdrops" };
+          const int N = sizeof(opts)/sizeof(opts[0]);
+          std::string cur = id(clock_wallpaper_image).current_option();
+          int idx = 0;
+          for (int i = 0; i < N; i++) if (cur == opts[i]) { idx = i; break; }
+          int next = (idx + 1) % N;
+          id(clock_wallpaper_image).publish_state(opts[next]);
+
+  - id: swipe_down_action   # toggle battery widget
+    then:
+      - switch.toggle: show_battery_status
+      - component.update: main_display
