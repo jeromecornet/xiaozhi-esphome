@@ -158,6 +158,32 @@
                       TextAlign::CENTER, "%s", battxt);
           }
 
+          // ---------- running timers, between Wi-Fi and battery ----------
+          // "3 timers" with a small < > chevron pair underneath as a swipe hint.
+          // the local table already mirrors voice/Assist timers (see
+          // now_playing/timer sync in clocks-ball_v2_interactive.yaml)
+          const int timer_count = (int) id(lt_end_ms).size();
+          if (timer_count > 0) {
+            const int count_x = cx - (int) (S * 0.045f);   // centre of the free gap
+            char cnt[24];
+            snprintf(cnt, sizeof(cnt), "%d timer%s", timer_count,
+                     timer_count == 1 ? "" : "s");
+            it.printf(count_x, row_y, id(font_battery), status_col,
+                      TextAlign::CENTER, "%s", cnt);
+
+            // swipe affordance: < > chevrons drawn as lines (font independent)
+            const int ay = row_y + std::max(12, S / 16);
+            const int aw = std::max(4, S / 48);
+            const int ah = std::max(3, S / 44);
+            const int spread = std::max(8, S / 22);
+            const int lx = count_x - spread;
+            const int rx = count_x + spread;
+            it.line(lx + aw, ay - ah, lx, ay, status_col);
+            it.line(lx, ay, lx + aw, ay + ah, status_col);
+            it.line(rx - aw, ay - ah, rx, ay, status_col);
+            it.line(rx, ay, rx - aw, ay + ah, status_col);
+          }
+
           // ---------- time: largest DSEG7 size that fits the centre chord ----------
           if (show_time) {
             const int max_w = std::min((int) (W * 0.92f), chord_w(0));
@@ -191,3 +217,24 @@
                       time_ok ? accent_col : dim_col, TextAlign::CENTER, "%s", datebuf);
           }
 
+          // ---------- soonest timer, small line at the bottom ----------
+          {
+            uint32_t rem = 0;
+            for (const auto &end : id(lt_end_ms)) {
+              const int32_t left = (int32_t) (end - millis());
+              const uint32_t r = (left > 0) ? (uint32_t) ((left + 999) / 1000) : 0;
+              if (r > 0 && (rem == 0 || r < rem))
+                rem = r;
+            }
+            if (rem > 0) {
+              char tbuf[24];
+              if (rem >= 3600)
+                snprintf(tbuf, sizeof(tbuf), "%u:%02u:%02u", (unsigned) (rem / 3600),
+                         (unsigned) ((rem / 60) % 60), (unsigned) (rem % 60));
+              else
+                snprintf(tbuf, sizeof(tbuf), "%02u:%02u", (unsigned) (rem / 60),
+                         (unsigned) (rem % 60));
+              it.printf(cx, cy + (int) (S * 0.325f), id(font_battery), time_col,
+                        TextAlign::CENTER, "%s", tbuf);
+            }
+          }

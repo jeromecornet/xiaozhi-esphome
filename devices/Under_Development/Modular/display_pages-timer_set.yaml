@@ -1,0 +1,94 @@
+# display page: timer set / edit (Ball v2 Interactive)
+#
+# Shown while a ring-drag on the bezel is editing a timer, and during the 2 s
+# "pending" window before it starts. Appended to the shared page list by
+# clocks-ball_v2_interactive.yaml.
+#
+#   +----------------------------------+
+#   |            SET TIMER             |   label (accent)
+#   |            STEP 10s              |   current increment for 10° of drag
+#   |                                  |
+#   |            12:34                 |   DSEG7 digits, largest that fits
+#   |                                  |
+#   |        starts in 2 s             |   pending hint
+#   o..................................o  rim ticks = pending / 24 h
+#
+# Everything is placed with the same round-panel chord check as the Simple
+# clock, so nothing reaches the bezel.
+      - id: timer_set_page
+        lambda: |-
+          const int W = it.get_width();
+          const int H = it.get_height();
+          const int S = std::min(W, H);
+          const int cx = W / 2;
+          const int cy = H / 2;
+          const int r  = S / 2;
+
+          const Color time_col   = id(simple_clock_time_color);
+          const Color accent_col = id(simple_clock_accent_color);
+          const Color dim_col    = accent_col * 60;
+
+          it.fill(Color::BLACK);
+
+          const int margin = std::max(2, S / 40);
+          auto chord_w = [&](int dy) -> int {
+            const int dyc = (dy > r) ? r : (dy < -r ? -r : dy);
+            const int hw  = (int) sqrtf((float) std::max(0, r * r - dyc * dyc));
+            return std::max(0, 2 * hw - 2 * margin);
+          };
+
+          const uint32_t total = id(lt_pending_s);
+
+          // ---------- rim ticks: how far the dial is (0 .. 24 h) ----------
+          {
+            const int ticks = 120;                  // one tick every 3°
+            const float frac = std::min(1.0f, (float) total / 86400.0f);
+            const int r_out = r - 3;
+            const int r_in  = r - 3 - std::max(3, S / 45);
+            for (int i = 0; i < ticks; i++) {
+              const bool on = ((float) i / (float) ticks) < frac;
+              it.line_at_angle(cx, cy, -90 + i * 3, r_out, r_in,
+                               on ? accent_col : dim_col);
+            }
+          }
+
+          // ---------- label + current increment ----------
+          it.printf(cx, cy - (int) (S * 0.315f), id(font_battery), accent_col,
+                    TextAlign::CENTER, "SET TIMER");
+
+          char stepbuf[24];
+          snprintf(stepbuf, sizeof(stepbuf), "STEP %us",
+                   (unsigned) id(lt_step_s));
+          it.printf(cx, cy - (int) (S * 0.225f), id(font_battery), dim_col,
+                    TextAlign::CENTER, "%s", stepbuf);
+
+          // ---------- the duration itself ----------
+          char tbuf[16];
+          if (total >= 3600)
+            snprintf(tbuf, sizeof(tbuf), "%u:%02u:%02u", (unsigned) (total / 3600),
+                     (unsigned) ((total / 60) % 60), (unsigned) (total % 60));
+          else
+            snprintf(tbuf, sizeof(tbuf), "%02u:%02u", (unsigned) (total / 60),
+                     (unsigned) (total % 60));
+
+          const int max_w = std::min((int) (S * 0.86f), chord_w(0));
+          int w = 0, xo = 0, bl = 0, h = 0;
+          auto *tfont = id(font_clock_seg_small);
+          id(font_clock_seg_huge)->measure(tbuf, &w, &xo, &bl, &h);
+          if (w <= max_w) {
+            tfont = id(font_clock_seg_huge);
+          } else {
+            id(font_clock_seg_big)->measure(tbuf, &w, &xo, &bl, &h);
+            if (w <= max_w)
+              tfont = id(font_clock_seg_big);
+          }
+          it.printf(cx, cy, tfont, total > 0 ? time_col : dim_col,
+                    TextAlign::CENTER, "%s", tbuf);
+
+          // ---------- hint ----------
+          if (id(lt_state) == 1)
+            it.printf(cx, cy + (int) (S * 0.30f), id(font_battery), dim_col,
+                      TextAlign::CENTER, "starts in 2s - tap to cancel");
+          else
+            it.printf(cx, cy + (int) (S * 0.30f), id(font_battery), dim_col,
+                      TextAlign::CENTER, "release to set");

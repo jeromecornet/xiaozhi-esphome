@@ -22,6 +22,16 @@ sensor:
     internal: true
     update_interval: 30s
 
+  # remaining seconds of the locally set timer (0 when idle)
+  - platform: template
+    name: "Local Timer Remaining"
+    id: lt_remaining
+    unit_of_measurement: s
+    device_class: duration
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
 color:
   # ${simple_clock_time_color} / ${simple_clock_accent_color} /
   # ${simple_clock_status_color} are set in the device YAML (SETTINGS section) so
@@ -38,8 +48,9 @@ font:
   # SIL Open Font License 1.1. Only the glyphs the clock can use are
   # rasterised, which keeps this at a few kB per size.
   # Runtime ladder: the page measures the string and picks the largest size that
-  # still fits the circle's chord at the centre. Seconds are not drawn, so "HH:MM"
-  # fits 108 px (the panel is 240 px across).
+  # still fits the circle's chord at the centre. With the seconds removed from
+  # the clock face "HH:MM" fits in 108 px (~1.8x the old 60 px), 84 px is the
+  # step below it.
   - file: https://cdn.jsdelivr.net/npm/dseg@0.46.0/fonts/DSEG7-Classic-MINI/DSEG7ClassicMini-Bold.ttf
     id: font_clock_seg_xxl
     size: 108
@@ -62,11 +73,15 @@ font:
     glyphs: "0123456789:-"
 
 display:
-  # Append the Simple page to the page list provided by the HW pack
-  # (display_pages-sendspin.yaml). List keys are appended on package merge,
-  # so nothing existing is replaced.
+  # Append the clock and timer pages to the page list provided by the HW pack
+  # (display_pages-sendspin.yaml). List keys are appended on package merge, so
+  # nothing existing is replaced.
   - id: !extend main_display
     pages: !include display_pages-simple_clock.yaml
+  - id: !extend main_display
+    pages: !include display_pages-timer_set.yaml
+  - id: !extend main_display
+    pages: !include display_pages-timer_status.yaml
 
 select:
   - platform: template
@@ -130,6 +145,204 @@ select:
           update: true
       - component.update: main_display
 
+# ---------------------------------------------------------------------------
+# Local timers, set by dragging around the rim ("ring gesture")
+#
+# Model (see PLAN.md, Amendment 2):
+#   * up to 4 concurrent timers, packed in lt_total_s / lt_end_ms
+#   * swiping left/right walks views: clock -> timer 1..n -> NEW -> clock
+#     (with no timers it toggles clock <-> NEW, so a swipe opens the set page)
+#   * the rim drag only edits on the NEW page, so navigation can never change or
+#     cancel a running timer
+#   * tapping a status page asks for confirmation (KEEP / CANCEL) first
+#
+# lt_state: 0 idle, 1 pending (2 s window on the set page)
+# ---------------------------------------------------------------------------
+globals:
+  - id: lt_state
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: lt_pending_s            # value being edited on the set page
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  # NB: no initial_value here — "" would hit an overload ambiguity between the
+  # value and std::array constructors of GlobalsComponent.
+  - id: lt_total_s              # total seconds of each running timer
+    type: std::vector<uint32_t>
+    restore_value: false
+  - id: lt_end_ms               # millis() deadline of each running timer
+    type: std::vector<uint32_t>
+    restore_value: false
+  - id: lt_remaining_s          # soonest remaining, for the overlay/sensor
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: lt_last_size            # republish helper
+    type: int
+    restore_value: false
+    initial_value: '-1'
+  - id: lt_step_s               # seconds added per 10 deg of drag
+    type: uint32_t
+    restore_value: false
+    initial_value: '1'
+  - id: lt_view                 # 0 = clock, 1..n = timer n, n+1 = new timer
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: lt_confirm              # cancel confirmation open on a status page
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: lt_confirm_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: lt_page_shown           # a timer page is on screen
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: lt_mirror_text          # sentence handed to HA
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  # 1 = this slot mirrors a voice/Assist timer (HA owns expiry and ringing)
+  - id: lt_mirror
+    type: std::vector<uint8_t>
+    restore_value: false
+  - id: tap_consumed            # the tap was handled by the timer UI
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: v_view
+    type: int
+    restore_value: false
+    initial_value: '0'
+  # ring gesture tracking
+  - id: rg_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: rg_consumed            # gesture long enough to count as a ring drag
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: rg_last_deg
+    type: float
+    restore_value: false
+    initial_value: '0'
+  - id: rg_deg                 # signed degrees accumulated since the last step
+    type: float
+    restore_value: false
+    initial_value: '0'
+  - id: rg_moved_deg           # total |movement| of the gesture
+    type: float
+    restore_value: false
+    initial_value: '0'
+
+binary_sensor:
+  - platform: template
+    name: "Local Timer Running"
+    id: lt_running
+    entity_category: diagnostic
+
+text_sensor:
+  - platform: template
+    name: "Local Timers"
+    id: lt_list
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Local Timer View"
+    id: lt_view_name
+    entity_category: diagnostic
+
+  # what the device believes the local time is (timezone debugging)
+  - platform: template
+    name: "Local Time"
+    id: local_time
+    entity_category: diagnostic
+    update_interval: 30s
+    lambda: |-
+      auto t = id(homeassistant_time).now();
+      if (!t.is_valid())
+        return std::string("invalid");
+      char b[32];
+      t.strftime(b, sizeof(b), "%Y-%m-%d %H:%M %Z");
+      return std::string(b);
+
+button:
+  - platform: template
+    name: "Cancel All Local Timers"
+    id: lt_cancel_all_btn
+    icon: "mdi:timer-off-outline"
+    on_press:
+      - script.execute: timer_cancel_all
+
+  - platform: template
+    name: "View Next Timer"
+    id: lt_view_next_btn
+    icon: "mdi:page-next-outline"
+    entity_category: diagnostic
+    on_press:
+      - script.execute: timer_view_next
+
+  - platform: template
+    name: "View Previous Timer"
+    id: lt_view_prev_btn
+    icon: "mdi:page-previous-outline"
+    entity_category: diagnostic
+    on_press:
+      - script.execute: timer_view_prev
+
+  # Diagnostic: replays a 40 deg clockwise rim drag through the real gesture
+  # code path (begin/move/end -> snap -> 2 s pending -> start), so the maths can
+  # be checked without a finger.
+  - platform: template
+    name: "Test Ring Drag"
+    id: lt_ring_test_btn
+    icon: "mdi:rotate-right"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          const int w = id(main_display).get_width();
+          const int h = id(main_display).get_height();
+          const int S = std::min(w, h);
+          const float cx = w / 2.0f, cy = h / 2.0f;
+          const float rad = 0.82f * (S / 2.0f);
+          id(lt_view) = (int) id(lt_end_ms).size() + 1;   // ensure the set page
+          // 0 deg (right), then 4 x 10 deg clockwise
+          id(gs_last_x) = (int) (cx + rad);
+          id(gs_last_y) = (int) cy;
+          id(rg_active) = true;
+          id(timer_ring_begin).execute();
+          for (int i = 1; i <= 4; i++) {
+            const float a = (float) i * 10.0f * 3.14159265f / 180.0f;
+            id(gs_last_x) = (int) (cx + rad * cosf(a));
+            id(gs_last_y) = (int) (cy + rad * sinf(a));
+            id(timer_ring_move).execute();
+          }
+          id(timer_ring_end).execute();
+
+  - platform: template
+    name: "Set 1 Minute Timer"
+    id: lt_minute_btn
+    icon: "mdi:timer-play-outline"
+    entity_category: config
+    on_press:
+      # same add path as the ring gesture, for testing and for HA convenience
+      - lambda: |-
+          id(lt_pending_s) = 60;
+          id(timer_start).execute();
+
+time:
+  # ESPHome derives the local time offset from the machine that *compiles* the
+  # firmware (it auto-detected America/Toronto on the build server), so pin the
+  # zone here via ${timezone} instead of depending on the build host.
+  - id: !extend homeassistant_time
+    timezone: ${timezone}
+
 switch:
   # The Simple clock draws the battery widget whenever this switch is on.
   # The shared core defaults to RESTORE_DEFAULT_ON, which keeps it OFF once it
@@ -138,6 +351,408 @@ switch:
     restore_mode: ALWAYS_ON
 
 script:
+  # --- view navigation -----------------------------------------------------
+  - id: timer_view_show
+    then:
+      - lambda: |-
+          const int n = (int) id(lt_end_ms).size();
+          if (id(lt_view) < 0)
+            id(lt_view) = 0;
+          if (id(lt_view) > n + 1)
+            id(lt_view) = 0;
+          id(lt_confirm) = false;
+          id(v_view) = 0;
+          if (id(lt_view) == 0) {
+            id(lt_page_shown) = false;
+            id(main_display).show_page(simple_clock);
+          } else if (id(lt_view) == n + 1) {
+            id(lt_page_shown) = true;
+            id(main_display).show_page(timer_set_page);
+          } else {
+            id(lt_page_shown) = true;
+            id(main_display).show_page(timer_status_page);
+          }
+          {
+            char b[24];
+            if (id(lt_view) == 0) {
+              id(lt_view_name).publish_state("clock");
+            } else if (id(lt_view) == n + 1) {
+              id(lt_view_name).publish_state("new");
+            } else {
+              snprintf(b, sizeof(b), "timer %d/%d", id(lt_view), n);
+              id(lt_view_name).publish_state(b);
+            }
+          }
+          id(main_display).update();
+
+  # Navigation never lands on NEW when a timer is running:
+  #   clock --left--> timer 1 ... --left--> timer n --left--> NEW --left--> clock
+  #   clock <--right-- timer 1 ... <--right-- timer n <--right-- NEW <--right-- clock
+  # i.e. left from the clock shows the first timer, right from the clock the last
+  # one; NEW is only reachable by continuing past the last timer. With no timers
+  # both directions open NEW (the set page).
+  - id: timer_view_next
+    then:
+      - lambda: |-
+          const int n = (int) id(lt_end_ms).size();
+          const int v = id(lt_view);
+          if (n == 0 || v == 0)
+            id(lt_view) = 1;                  // no timers / clock -> first stop
+          else if (v >= n + 1)
+            id(lt_view) = 0;                  // NEW -> clock
+          else
+            id(lt_view) = v + 1;              // timer i -> i+1 (or NEW)
+          id(timer_view_show).execute();
+
+  - id: timer_view_prev
+    then:
+      - lambda: |-
+          const int n = (int) id(lt_end_ms).size();
+          const int v = id(lt_view);
+          if (n == 0)
+            id(lt_view) = 1;                  // set page is the only stop
+          else if (v == 0)
+            id(lt_view) = n;                  // clock -> last timer
+          else if (v > 1)
+            id(lt_view) = v - 1;              // timer i -> i-1
+          else
+            id(lt_view) = 0;                  // timer 1 -> clock
+          id(timer_view_show).execute();
+
+  # --- tap handling on the timer pages -------------------------------------
+  # Sets tap_consumed; the HW falls back to the normal tap (wake word) when not.
+  - id: timer_view_tap
+    then:
+      - lambda: |-
+          id(tap_consumed) = false;
+          const int n = (int) id(lt_end_ms).size();
+          // only a timer page that is actually on screen handles taps; on the
+          // clock the tap must reach the wake word even while timers run
+          if (id(lt_view) == 0 || !id(lt_page_shown)) return;
+
+          id(tap_consumed) = true;
+
+          if (id(lt_view) == n + 1) {              // set page: abandon the pending value
+            id(lt_state) = 0;
+            id(lt_pending_s) = 0;
+            id(lt_view) = 0;
+            id(timer_view_show).execute();
+            return;
+          }
+
+          if (!id(lt_confirm)) {                   // first tap: ask for confirmation
+            id(lt_confirm) = true;
+            id(lt_confirm_ms) = millis();
+            id(main_display).update();
+            return;
+          }
+
+          // confirmation open: hit-test KEEP / CANCEL (anything else keeps)
+          const int W = id(main_display).get_width();
+          const int H = id(main_display).get_height();
+          const int S = std::min(W, H);
+          const int cx = W / 2, cy = H / 2;
+          const int bw = (int) (S * 0.36f);
+          const int bh = (int) (S * 0.16f);
+          const int by = cy + (int) (S * 0.10f);
+          const int keep_x = cx - (int) (S * 0.20f) - bw / 2;
+          const int canc_x = cx + (int) (S * 0.20f) - bw / 2;
+          const int x = id(gs_last_x), y = id(gs_last_y);
+
+          const bool on_cancel = (x >= canc_x && x <= canc_x + bw &&
+                                  y >= by && y <= by + bh);
+          if (on_cancel) {
+            id(lt_confirm) = false;
+            id(timer_cancel_current).execute();
+          } else {
+            id(lt_confirm) = false;
+            id(main_display).update();
+          }
+
+  # --- vertical swipe pages: clock <-> now playing / presets -----------------
+  - id: timer_ring_begin
+    then:
+      - lambda: |-
+          const int w = id(main_display).get_width();
+          const int h = id(main_display).get_height();
+          const float cx = w / 2.0f, cy = h / 2.0f;
+          float dx = id(gs_last_x) - cx, dy = id(gs_last_y) - cy;
+          const int ROT = ${rotate_display};
+          float nx = dx, ny = dy;
+          switch (ROT) {
+            case 90:  nx =  dy; ny = -dx; break;
+            case 180: nx = -dx; ny = -dy; break;
+            case 270: nx = -dy; ny =  dx; break;
+            default: break;
+          }
+          id(rg_last_deg)  = atan2f(ny, nx) * (180.0f / 3.14159265f);
+          id(rg_deg)       = 0.0f;
+          id(rg_moved_deg) = 0.0f;
+          id(rg_consumed)  = false;
+          // keep editing the pending value inside the 2 s window
+          if (id(lt_state) != 1)
+            id(lt_pending_s) = 0;
+
+  - id: timer_ring_move
+    then:
+      - lambda: |-
+          if (!id(rg_active)) return;
+
+          const int w = id(main_display).get_width();
+          const int h = id(main_display).get_height();
+          const float cx = w / 2.0f, cy = h / 2.0f;
+          float dx = id(gs_last_x) - cx, dy = id(gs_last_y) - cy;
+          const int ROT = ${rotate_display};
+          float nx = dx, ny = dy;
+          switch (ROT) {
+            case 90:  nx =  dy; ny = -dx; break;
+            case 180: nx = -dx; ny = -dy; break;
+            case 270: nx = -dy; ny =  dx; break;
+            default: break;
+          }
+          const float deg = atan2f(ny, nx) * (180.0f / 3.14159265f);
+
+          float d = deg - id(rg_last_deg);
+          while (d >  180.0f) d -= 360.0f;
+          while (d < -180.0f) d += 360.0f;
+          id(rg_last_deg) = deg;
+          id(rg_deg) += d;
+          id(rg_moved_deg) += fabsf(d);
+
+          // one increment per 10 deg; clockwise (positive) adds, ccw subtracts
+          bool changed = false;
+          while (fabsf(id(rg_deg)) >= 10.0f) {
+            const int dir = (id(rg_deg) > 0.0f) ? 1 : -1;
+            {
+              const uint32_t cv = id(lt_pending_s);
+              id(lt_step_s) = (cv <    30) ?   1 :
+                              (cv <   300) ?  10 :
+                              (cv <  1800) ?  30 :
+                              (cv < 10800) ?  60 :
+                              (cv < 43200) ? 300 : 600;
+            }
+            long v = (long) id(lt_pending_s) + (long) dir * (long) id(lt_step_s);
+            if (v < 0) v = 0;
+            if (v > 86400) v = 86400;
+            id(lt_pending_s) = (uint32_t) v;
+            id(rg_deg) -= (float) dir * 10.0f;
+            changed = true;
+          }
+
+          if (changed) {
+            id(lt_state) = 1;
+            id(lt_page_shown) = true;
+            id(main_display).show_page(timer_set_page);
+            id(main_display).update();
+          }
+
+  - id: timer_ring_end
+    then:
+      - lambda: |-
+          id(rg_active) = false;
+          // short touch on the bezel: not a ring drag, let the tap logic run
+          if (id(rg_moved_deg) < 15.0f) {
+            id(rg_consumed) = false;
+            return;
+          }
+          id(rg_consumed) = true;
+          id(timer_ring_snap_and_commit).execute();
+
+  # snap to the active increment, then start the 2 s pending window
+  - id: timer_ring_snap_and_commit
+    then:
+      - lambda: |-
+          {
+            const uint32_t cv = id(lt_pending_s);
+            id(lt_step_s) = (cv <    30) ?   1 :
+                            (cv <   300) ?  10 :
+                            (cv <  1800) ?  30 :
+                            (cv < 10800) ?  60 :
+                            (cv < 43200) ? 300 : 600;
+          }
+          const uint32_t step = id(lt_step_s);
+          uint32_t v = id(lt_pending_s);
+          if (v > 0) {
+            uint32_t snapped = ((v + step / 2) / step) * step;
+            if (snapped == 0)
+              snapped = step;          // never let a gesture cancel silently
+            if (snapped > 86400)
+              snapped = 86400;
+            v = snapped;
+          }
+          id(lt_pending_s) = v;
+          if (v == 0) {
+            id(lt_state) = 0;
+            id(lt_view) = 0;
+            id(timer_view_show).execute();
+            return;
+          }
+          id(lt_state) = 1;
+          id(lt_page_shown) = true;
+          id(main_display).show_page(timer_set_page);
+          id(main_display).update();
+      - script.execute: timer_pending_window
+
+  - id: timer_pending_window
+    mode: restart
+    then:
+      - delay: 2s
+      - if:
+          condition:
+            lambda: return id(lt_state) == 1 && id(lt_pending_s) > 0;
+          then:
+            - script.execute: timer_start
+
+  # --- start / cancel / finish ---------------------------------------------
+  - id: timer_start
+    then:
+      - lambda: |-
+          const uint32_t secs = id(lt_pending_s);
+          if (secs == 0) return;
+
+          // cap at 4 concurrent timers: drop the one that fires soonest
+          if (id(lt_end_ms).size() >= 4) {
+            size_t drop = 0;
+            for (size_t i = 1; i < id(lt_end_ms).size(); i++)
+              if (id(lt_end_ms)[i] < id(lt_end_ms)[drop]) drop = i;
+            id(lt_end_ms).erase(id(lt_end_ms).begin() + drop);
+            id(lt_total_s).erase(id(lt_total_s).begin() + drop);
+            id(lt_mirror).erase(id(lt_mirror).begin() + drop);
+          }
+
+          id(lt_end_ms).push_back(millis() + secs * 1000);
+          id(lt_total_s).push_back(secs);
+          id(lt_mirror).push_back(0);
+          id(lt_pending_s) = 0;
+          id(lt_state) = 0;
+          id(lt_view) = (int) id(lt_end_ms).size();     // open the new timer
+
+          {
+            char s[96];
+            snprintf(s, sizeof(s), "set a timer named timer %u for %u seconds",
+                     (unsigned) id(lt_view), (unsigned) secs);
+            id(lt_mirror_text) = s;
+          }
+          ESP_LOGI("local_timer", "start %u s (now %u timers)", (unsigned) secs,
+                   (unsigned) id(lt_end_ms).size());
+      - script.execute: timer_mirror
+      - script.execute: timer_view_show
+      - script.execute: timer_publish
+
+  - id: timer_cancel_current
+    then:
+      - lambda: |-
+          const int n = (int) id(lt_end_ms).size();
+          int idx = id(lt_view) - 1;
+          if (idx < 0 || idx >= n) return;
+
+          char s[96];
+          if (idx < (int) id(lt_mirror).size() && id(lt_mirror)[idx])
+            snprintf(s, sizeof(s), "cancel timer");
+          else
+            snprintf(s, sizeof(s), "cancel timer timer %d", idx + 1);
+          id(lt_mirror_text) = s;
+          id(lt_end_ms).erase(id(lt_end_ms).begin() + idx);
+          id(lt_total_s).erase(id(lt_total_s).begin() + idx);
+          id(lt_mirror).erase(id(lt_mirror).begin() + idx);
+          ESP_LOGI("local_timer", "cancel timer %d (%u left)", idx + 1,
+                   (unsigned) id(lt_end_ms).size());
+          // stay on a real page: clock when empty, else the last timer
+          const int left_n = (int) id(lt_end_ms).size();
+          if (left_n == 0)
+            id(lt_view) = 0;
+          else if (id(lt_view) > left_n)
+            id(lt_view) = left_n;
+      - script.execute: timer_mirror
+      - script.execute: timer_view_show
+      - script.execute: timer_publish
+
+  - id: timer_cancel_all
+    then:
+      - lambda: |-
+          if (id(lt_end_ms).empty() && id(lt_state) == 0) return;
+          id(lt_mirror_text) = "cancel all timers";
+          id(lt_end_ms).clear();
+          id(lt_total_s).clear();
+          id(lt_mirror).clear();
+          id(lt_pending_s) = 0;
+          id(lt_state) = 0;
+          id(lt_view) = 0;
+          id(lt_confirm) = false;
+          ESP_LOGI("local_timer", "cancel all");
+      - script.execute: timer_mirror
+      - switch.turn_off: timer_ringing
+      - script.execute: timer_view_show
+      - script.execute: timer_publish
+
+  - id: timer_finish
+    then:
+      - lambda: |-
+          id(lt_view) = 0;
+          id(lt_confirm) = false;
+          id(v_view) = 0;
+          id(lt_page_shown) = true;
+          ESP_LOGI("local_timer", "finished (%u others left)",
+                   (unsigned) id(lt_end_ms).size());
+      - script.execute: timer_publish
+      - display.page.show: timer_finished_page
+      - component.update: main_display
+      - switch.turn_on: timer_ringing
+
+  # --- sensors --------------------------------------------------------------
+  - id: timer_publish
+    then:
+      - lambda: |-
+          uint32_t soonest = 0;
+          for (const auto &end : id(lt_end_ms)) {
+            const int32_t left = (int32_t) (end - millis());
+            const uint32_t rem = (left > 0) ? (uint32_t) ((left + 999) / 1000) : 0;
+            if (soonest == 0 || rem < soonest) soonest = rem;
+          }
+          id(lt_remaining_s) = soonest;
+          id(lt_last_size) = (int) id(lt_end_ms).size();
+      - sensor.template.publish:
+          id: lt_remaining
+          state: !lambda 'return (float) id(lt_remaining_s);'
+      - binary_sensor.template.publish:
+          id: lt_running
+          state: !lambda 'return !id(lt_end_ms).empty();'
+      - text_sensor.template.publish:
+          id: lt_view_name
+          state: !lambda |-
+            const int n = (int) id(lt_end_ms).size();
+            if (id(lt_view) == 0) return std::string("clock");
+            if (id(lt_view) == n + 1) return std::string("new");
+            char b[24];
+            snprintf(b, sizeof(b), "timer %d/%d", id(lt_view), n);
+            return std::string(b);
+      - text_sensor.template.publish:
+          id: lt_list
+          state: !lambda |-
+            std::string out;
+            for (size_t i = 0; i < id(lt_end_ms).size(); i++) {
+              const int32_t left = (int32_t) (id(lt_end_ms)[i] - millis());
+              const uint32_t rem = (left > 0) ? (uint32_t) ((left + 999) / 1000) : 0;
+              char b[24];
+              snprintf(b, sizeof(b), "%s%u:%02u", i ? ", " : "",
+                       (unsigned) (rem / 60), (unsigned) (rem % 60));
+              out += b;
+            }
+            return out;
+
+  # --- HA mirror (best effort: needs HA reachable over the native API) ------
+  - id: timer_mirror
+    then:
+      - if:
+          condition:
+            lambda: return global_api_server != nullptr && global_api_server->is_connected();
+          then:
+            - lambda: 'ESP_LOGI("local_timer", "mirror: %s", id(lt_mirror_text).c_str());'
+            - homeassistant.action:
+                action: conversation.process
+                data:
+                  text: !lambda 'return id(lt_mirror_text);'
+
   - id: show_clock_page
     then:
       - lambda: |-
@@ -172,14 +787,18 @@ script:
   # Swiping left/right used to cycle the clock face. Kept as no-ops so the HW
   # packs (which call these ids on swipe) stay valid, but the face can no longer
   # be changed by accident. Use the "Clock Style" select to change it.
-  - id: swipe_left_action
-    then: []
+  # left/right swipes walk the timer views (clock -> timer 1..n -> NEW)
+  - id: swipe_left_action   # next timer view
+    then:
+      - script.execute: timer_view_next
 
-  - id: swipe_right_action
-    then: []
+  - id: swipe_right_action  # previous timer view
+    then:
+      - script.execute: timer_view_prev
 
   # Wallpaper is pinned to ${clock_background_image} too, so swiping up no
   # longer cycles it (the Simple clock ignores the wallpaper anyway).
+  # --- countdown + screen upkeep -------------------------------------------
   - id: swipe_up_action
     then: []
 
@@ -188,9 +807,107 @@ script:
   - id: swipe_down_action
     then: []
 
-time:
-  # ESPHome derives the local time offset from the machine that *compiles* the
-  # firmware, so pin the zone here via ${timezone} instead of depending on the
-  # build host.
-  - id: !extend homeassistant_time
-    timezone: ${timezone}
+interval:
+  - interval: 250ms
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+
+          // dismiss the confirmation dialog if it is left open
+          if (id(lt_confirm) && (now - id(lt_confirm_ms) > 6000)) {
+            id(lt_confirm) = false;
+            if (id(lt_view) != 0)
+              id(main_display).update();
+          }
+
+          // ---- mirror voice / Home Assistant Assist timers -----------------
+          // They stay owned by HA (so "cancel timer" and "set another timer"
+          // keep working through Assist), but appear in the local list so the
+          // UI is the same as for ring-set timers. Rebuilt from HA every tick,
+          // which also drops entries HA finished or cancelled.
+          {
+            for (size_t i = 0; i < id(lt_mirror).size();) {
+              if (id(lt_mirror)[i]) {
+                id(lt_end_ms).erase(id(lt_end_ms).begin() + i);
+                id(lt_total_s).erase(id(lt_total_s).begin() + i);
+                id(lt_mirror).erase(id(lt_mirror).begin() + i);
+              } else {
+                ++i;
+              }
+            }
+            for (const auto &t : id(va).get_timers()) {
+              if (!t.is_active)
+                continue;
+              const uint32_t secs = (t.seconds_left > 0) ? t.seconds_left
+                                                        : t.total_seconds;
+              if (secs == 0)
+                continue;
+              if (id(lt_end_ms).size() >= 4)
+                break;
+              id(lt_end_ms).push_back(millis() + secs * 1000);
+              id(lt_total_s).push_back(t.total_seconds > 0 ? t.total_seconds : secs);
+              id(lt_mirror).push_back(1);
+            }
+          }
+
+          // countdown: drop expired timers
+          bool expired = false;
+          auto &ends = id(lt_end_ms);
+          auto &tots = id(lt_total_s);
+          auto &mirr = id(lt_mirror);
+          for (size_t i = 0; i < ends.size(); ) {
+            const int32_t left = (int32_t) (ends[i] - now);
+            if (left <= 0) {
+              const bool mirrored = (i < mirr.size() && mirr[i]);
+              ends.erase(ends.begin() + i);
+              tots.erase(tots.begin() + i);
+              if (i < mirr.size())
+                mirr.erase(mirr.begin() + i);
+              if (!mirrored)
+                expired = true;      // HA rings its own timers
+              continue;
+            }
+            ++i;
+          }
+
+          if (expired) {
+            id(timer_finish).execute();
+            return;
+          }
+
+          uint32_t soonest = 0;
+          for (const auto &end : ends) {
+            const int32_t left = (int32_t) (end - now);
+            const uint32_t rem = (uint32_t) ((left + 999) / 1000);
+            if (soonest == 0 || rem < soonest) soonest = rem;
+          }
+
+          if (soonest != id(lt_remaining_s) || (int) ends.size() != id(lt_last_size)) {
+            id(timer_publish).execute();
+            id(main_display).update();
+          }
+
+          if (id(lt_view) > (int) ends.size() + 1) {
+            id(lt_view) = 0;
+            id(timer_view_show).execute();
+          }
+
+          // core clears show_clock whenever a timer is active, which drops the
+          // clock page and lets its hourglass widget take over; while we own the
+          // timer we want our clock (with the N timers indicator) instead.
+          if (id(v_view) == 0 && id(lt_view) == 0 && id(lt_state) == 0 &&
+              !ends.empty() && !id(timer_ringing).state && !id(show_clock) &&
+              !id(va).is_running() &&
+              id(voice_assistant_phase) == ${voice_assist_idle_phase_id}) {
+            id(show_clock) = true;
+            id(main_display).show_page(simple_clock);
+            id(main_display).update();
+          }
+
+          // a timer page left behind (e.g. ringing dismissed with a tap)
+          if (id(lt_view) == 0 && id(lt_state) == 0 && id(lt_page_shown) &&
+              id(v_view) == 0 && !id(timer_ringing).state && !id(va).is_running()) {
+            id(lt_page_shown) = false;
+            id(main_display).show_page(simple_clock);
+            id(main_display).update();
+          }

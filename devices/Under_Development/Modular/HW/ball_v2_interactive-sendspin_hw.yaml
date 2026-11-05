@@ -364,6 +364,21 @@ touchscreen:
             id(gs_last_y)  = touch.y;
             id(gs_start_ms) = millis();
 
+            // Ring gesture (local timer): a touch that starts in the outer band of
+            // the "new timer" page. Small movements degrade to a normal tap.
+            {
+              const int w = id(main_display).get_width();
+              const int h = id(main_display).get_height();
+              const int min_dim = (w < h) ? w : h;
+              const float dx = touch.x - w / 2.0f;
+              const float dy = touch.y - h / 2.0f;
+              const float rad = sqrtf(dx * dx + dy * dy);
+              const bool on_set_page =
+                  (id(lt_view) == (int) id(lt_end_ms).size() + 1);
+              id(rg_active) = on_set_page && (rad >= 0.65f * (min_dim / 2.0f));
+              if (id(rg_active)) id(timer_ring_begin).execute();
+            }
+
     on_update:
       then:
         - lambda: |-
@@ -375,12 +390,20 @@ touchscreen:
                 break;
               }
             }
+            if (id(rg_active)) id(timer_ring_move).execute();
 
     on_release:
       then:
         - lambda: |-
             if (!id(gs_touch_active)) return;
             id(gs_touch_active) = false;
+
+            // A ring drag consumes the release (no swipe/tap classification).
+            if (id(rg_active)) {
+              id(timer_ring_end).execute();
+              if (id(rg_consumed)) return;
+            }
+
             if (id(gs_hold_fired)) return;
 
             const int start_x = id(gs_start_x);
@@ -443,7 +466,10 @@ touchscreen:
                 // While playing this is intentionally a no-op on-device: core's
                 // touch_input handler ignores it in the playing phase, so a tap
                 // never interrupts playback.
-                id(pulse_touch_input).execute();
+                // Timer pages handle the tap themselves (the status page asks for
+                // confirmation first); otherwise it is the usual tap.
+                id(timer_view_tap).execute();
+                if (!id(tap_consumed)) id(pulse_touch_input).execute();
               }
               return;
             }
@@ -517,6 +543,7 @@ interval:
           // Fast rejects
           if (!id(gs_touch_active)) return;
           if (id(gs_hold_fired)) return;
+          if (id(rg_active)) return;   // ring drag on the bezel, not a hold
           // NOTE: deliberately not gated on swipe_local — the "Handle swipes on
           // device" switch controls what a *swipe* does locally, not the hold.
 

@@ -1,0 +1,119 @@
+# display page: timer status + cancel confirmation (Ball v2 Interactive)
+#
+# One page is reused for every running timer; which one is shown comes from
+# lt_view (1..n) over the timer table in clocks-ball_v2_interactive.yaml.
+# Swipe left/right walks the timers, the last view is the "new timer" set page.
+#
+#   +----------------------------------+
+#   |            TIMER 1/2             |   label (accent)
+#   |                                  |
+#   |            04:37                 |   DSEG7 digits, remaining time
+#   |                                  |
+#   |           tap to cancel          |   hint (dim)
+#   o..................................o  rim ticks = remaining / total
+#
+# Tapping opens a confirmation band with KEEP / CANCEL buttons; nothing is
+# cancelled without that second tap.
+      - id: timer_status_page
+        lambda: |-
+          const int W = it.get_width();
+          const int H = it.get_height();
+          const int S = std::min(W, H);
+          const int cx = W / 2;
+          const int cy = H / 2;
+          const int r  = S / 2;
+
+          const Color time_col   = id(simple_clock_time_color);
+          const Color accent_col = id(simple_clock_accent_color);
+          const Color dim_col    = accent_col * 60;
+          const Color warn_col   = Color(0xD0, 0x30, 0x20);
+
+          it.fill(Color::BLACK);
+
+          const int margin = std::max(2, S / 40);
+          auto chord_w = [&](int dy) -> int {
+            const int dyc = (dy > r) ? r : (dy < -r ? -r : dy);
+            const int hw  = (int) sqrtf((float) std::max(0, r * r - dyc * dyc));
+            return std::max(0, 2 * hw - 2 * margin);
+          };
+
+          const int n = (int) id(lt_end_ms).size();
+          int idx = id(lt_view) - 1;
+          if (idx < 0)
+            idx = 0;
+          if (n > 0 && idx >= n)
+            idx = n - 1;
+
+          uint32_t rem = 0, total = 0;
+          if (n > 0) {
+            total = id(lt_total_s)[idx];
+            const int32_t left = (int32_t) (id(lt_end_ms)[idx] - millis());
+            rem = (left > 0) ? (uint32_t) ((left + 999) / 1000) : 0;
+          }
+
+          // ---------- rim ticks: remaining fraction of this timer ----------
+          {
+            const int ticks = 120;
+            const float frac = (total > 0)
+                                 ? std::min(1.0f, (float) rem / (float) total) : 0.0f;
+            const int r_out = r - 3;
+            const int r_in  = r - 3 - std::max(3, S / 45);
+            for (int i = 0; i < ticks; i++) {
+              const bool on = ((float) i / (float) ticks) < frac;
+              it.line_at_angle(cx, cy, -90 + i * 3, r_out, r_in,
+                               on ? accent_col : dim_col);
+            }
+          }
+
+          // ---------- label ----------
+          char label[32];
+          snprintf(label, sizeof(label), "TIMER %d/%d", idx + 1, n);
+          it.printf(cx, cy - (int) (S * 0.315f), id(font_battery), accent_col,
+                    TextAlign::CENTER, "%s", label);
+
+          // ---------- remaining time ----------
+          char tbuf[24];
+          if (rem >= 3600)
+            snprintf(tbuf, sizeof(tbuf), "%u:%02u:%02u", (unsigned) (rem / 3600),
+                     (unsigned) ((rem / 60) % 60), (unsigned) (rem % 60));
+          else
+            snprintf(tbuf, sizeof(tbuf), "%02u:%02u", (unsigned) (rem / 60),
+                     (unsigned) (rem % 60));
+
+          const int max_w = std::min((int) (S * 0.86f), chord_w(0));
+          int w = 0, xo = 0, bl = 0, h = 0;
+          auto *tfont = id(font_clock_seg_small);
+          id(font_clock_seg_huge)->measure(tbuf, &w, &xo, &bl, &h);
+          if (w <= max_w) {
+            tfont = id(font_clock_seg_huge);
+          } else {
+            id(font_clock_seg_big)->measure(tbuf, &w, &xo, &bl, &h);
+            if (w <= max_w)
+              tfont = id(font_clock_seg_big);
+          }
+          it.printf(cx, cy, tfont, time_col, TextAlign::CENTER, "%s", tbuf);
+
+          if (!id(lt_confirm)) {
+            it.printf(cx, cy + (int) (S * 0.30f), id(font_battery), dim_col,
+                      TextAlign::CENTER, "tap to cancel");
+          }
+
+          // ---------- cancel confirmation ----------
+          if (id(lt_confirm)) {
+            const int bw = (int) (S * 0.36f);
+            const int bh = (int) (S * 0.16f);
+            const int by = cy + (int) (S * 0.10f);
+            const int keep_x = cx - (int) (S * 0.20f) - bw / 2;
+            const int canc_x = cx + (int) (S * 0.20f) - bw / 2;
+
+            it.filled_rectangle(0, cy - (int) (S * 0.10f), W,
+                                (int) (S * 0.44f), Color(0x10, 0x10, 0x10));
+            it.printf(cx, cy - (int) (S * 0.03f), id(font_battery), time_col,
+                      TextAlign::CENTER, "Cancel this timer?");
+            it.filled_rectangle(keep_x, by, bw, bh, accent_col);
+            it.filled_rectangle(canc_x, by, bw, bh, warn_col);
+            it.printf(keep_x + bw / 2, by + bh / 2, id(font_battery),
+                      Color::BLACK, TextAlign::CENTER, "KEEP");
+            it.printf(canc_x + bw / 2, by + bh / 2, id(font_battery),
+                      Color::BLACK, TextAlign::CENTER, "CANCEL");
+          }
