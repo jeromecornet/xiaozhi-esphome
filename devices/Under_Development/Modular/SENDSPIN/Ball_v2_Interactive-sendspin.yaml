@@ -46,21 +46,25 @@ substitutions:
 
   simple_clock_time_color: "ffc107" # big DSEG7 time digits (yellow)
   simple_clock_accent_color: "26ed3a" # date line (green)
-  simple_clock_status_color: "2e9bff" # top status row: wifi bars, battery (blue)
+  simple_clock_status_color: "2e9bff" # top status row: wifi bars, timer count, battery (blue)
 
-  # Preset actions page (vertical swipe): the automation the News button targets.
+  # Preset actions page (swipe up/down): the automation this button fires.
   preset_news_automation: "automation.news"
-
-  # Now playing comes from Sendspin: the ball is a muted member of the Music
-  # Assistant group, so title/artist/album and the artwork arrive natively.
-  # Transport controls go through the Sendspin controller.
-  media_entity: "media_player.kitchen_speaker_2"   # HA entity for reference
-  albumsize: "156x156"                             # Sendspin artwork size
-  np_linger_seconds: "30"                          # linger after a pause
-  ma_group_entity: "media_player.kitchen_with_controls"  # group the ball belongs to
 
   # Local timezone for the clock (baked into the firmware at compile time).
   timezone: "America/Toronto"
+
+  # Now playing comes from Sendspin: the ball is a muted member of the Music
+  # Assistant group, so title/artist/album and the artwork arrive natively.
+  # Transport controls still go through HA to this entity.
+  media_entity: "media_player.kitchen_speaker_2"
+  # artwork size the Sendspin ALBUM image is resized to (matches the page)
+  albumsize: "156x156"
+  # how long the now playing page stays up after playback stops
+  np_linger_seconds: "30"
+  # Music Assistant group the ball belongs to (used to keep it silent while the
+  # group plays, since MA applies the group volume to every member)
+  ma_group_entity: "media_player.kitchen_with_controls"
 
   # USE ONLINE OR LOCAL MODEL AND WALLPAPER IMAGES, IMAGES SHOULD BE PLACED IN: homeassistant/www/images/
   imagepath: "https://github.com/jeromecornet/xiaozhi-esphome/raw/main/images"

@@ -73,11 +73,12 @@ font:
     glyphs: "0123456789:-"
 
 display:
-  # Append the clock and timer pages to the page list provided by the HW pack
-  # (display_pages-sendspin.yaml). List keys are appended on package merge, so
-  # nothing existing is replaced.
+  # Append the Simple page to the page list provided by the HW pack
+  # (display_pages-sendspin.yaml). List keys are appended on package merge,
+  # so nothing existing is replaced.
   - id: !extend main_display
     pages: !include display_pages-simple_clock.yaml
+  # Timer edit page (ring-drag on the bezel) and the per-timer status page.
   - id: !extend main_display
     pages: !include display_pages-timer_set.yaml
   - id: !extend main_display
@@ -221,12 +222,18 @@ globals:
   - id: lt_mirror
     type: std::vector<uint8_t>
     restore_value: false
+  # watchdog: when the VA phase gets stuck non-idle while VA is not running the
+  # whole swipe UI goes dead, so heal it
+  - id: va_stuck_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
   - id: tap_consumed            # the tap was handled by the timer UI
     type: bool
     restore_value: false
     initial_value: 'false'
-  # true when the user swiped away from the now playing page (respected until the
-  # next playback starts)
+  # true when the user swiped away from the now playing page (respect it until
+  # the next playback starts)
   - id: media_dismissed
     type: bool
     restore_value: false
@@ -275,6 +282,7 @@ text_sensor:
     id: lt_view_name
     entity_category: diagnostic
 
+  # what the device believes the local time is (timezone debugging)
   # outcome of the last preset action (was HA able to run the automation?)
   - platform: template
     name: "Preset Result"
@@ -288,7 +296,6 @@ text_sensor:
     entity_category: diagnostic
     update_interval: never
 
-  # what the device believes the local time is (timezone debugging)
   - platform: template
     name: "Local Time"
     id: local_time
@@ -975,18 +982,26 @@ script:
   # packs (which call these ids on swipe) stay valid, but the face can no longer
   # be changed by accident. Use the "Clock Style" select to change it.
   # left/right swipes walk the timer views (clock -> timer 1..n -> NEW)
-  - id: swipe_left_action   # next timer view
+  - id: swipe_left_action
     then:
-      - script.execute: timer_view_next
+      - if:
+          condition:
+            lambda: return id(v_view) == 0;
+          then:
+            - script.execute: timer_view_next
 
-  - id: swipe_right_action  # previous timer view
+  - id: swipe_right_action
     then:
-      - script.execute: timer_view_prev
+      - if:
+          condition:
+            lambda: return id(v_view) == 0;
+          then:
+            - script.execute: timer_view_prev
 
   # Wallpaper is pinned to ${clock_background_image} too, so swiping up no
   # longer cycles it (the Simple clock ignores the wallpaper anyway).
   # --- countdown + screen upkeep -------------------------------------------
-  - id: swipe_up_action     # presets / back to clock
+  - id: swipe_up_action     # now playing / presets / back to clock
     then:
       - script.execute: v_up
 
@@ -1007,6 +1022,26 @@ interval:
             id(lt_confirm) = false;
             if (id(lt_view) != 0)
               id(main_display).update();
+          }
+
+          // ---- heal a stuck voice-assistant phase ---------------------------
+          if (id(voice_assistant_phase) != ${voice_assist_idle_phase_id} &&
+              id(voice_assistant_phase) != ${voice_assist_playing_phase_id} &&
+              !id(va).is_running()) {
+            if (id(va_stuck_ms) == 0) {
+              id(va_stuck_ms) = now;
+            } else if (now - id(va_stuck_ms) > 8000) {
+              id(va_stuck_ms) = 0;
+              ESP_LOGW("va", "phase %d stuck while VA is not running -> reset",
+                       id(voice_assistant_phase));
+              id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+              id(show_clock) = true;
+              id(main_display).show_page(simple_clock);
+              id(main_display).update();
+              id(start_wake_word).execute();
+            }
+          } else {
+            id(va_stuck_ms) = 0;
           }
 
           // ---- mirror voice / Home Assistant Assist timers -----------------

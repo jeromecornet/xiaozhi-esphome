@@ -12,9 +12,24 @@ packages:
   # variant-local copy of clocks-standard.yaml: adds the "Simple" clock style
   # (DSEG7, yellow/green on black) and makes it the default.
   clocks: !include ../clocks-ball_v2_interactive.yaml
-  # now playing page: metadata/artwork arrive over Sendspin, so the ball only
-  # displays and controls (audio keeps playing on the real speaker)
+  # now-playing mirror of a Home Assistant media_player (display only; audio
+  # keeps playing on the real speaker)
   now_playing: !include ../now_playing_ha.yaml
+
+globals:
+  - id: tap_armed            # a first tap happened recently (waiting for a second)
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: tap_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  # 0 = nothing, 1 = silence the alarm, 2 = stop listening, 3 = wake the assistant
+  - id: tap_action
+    type: int
+    restore_value: false
+    initial_value: '0'
 
 binary_sensor:
   # core already declares left_button (GPIO0, INPUT_PULLUP, inverted); only add
@@ -367,8 +382,9 @@ touchscreen:
             id(gs_last_y)  = touch.y;
             id(gs_start_ms) = millis();
 
-            // Ring gesture (local timer): a touch that starts in the outer band of
-            // the "new timer" page. Small movements degrade to a normal tap.
+            // Ring gesture: edits the duration, but only on the "new timer"
+            // page (lt_view == n+1). Everywhere else a rim drag is just a swipe
+            // (view navigation), so it can never touch a running timer.
             {
               const int w = id(main_display).get_width();
               const int h = id(main_display).get_height();
@@ -469,9 +485,11 @@ touchscreen:
                 // While playing this is intentionally a no-op on-device: core's
                 // touch_input handler ignores it in the playing phase, so a tap
                 // never interrupts playback.
-                // Route on the page that is displayed: the presets page hit-tests
-                // its buttons, the timer pages ask for confirmation first, and on
-                // the clock the tap is the usual one (wake word / silence ringing).
+                // Timer pages handle the tap themselves (status page asks for
+                // confirmation first); on the clock this falls through to the
+                // usual tap (wake word / silence ringing).
+                // Route on the page that is actually displayed: v_view can drift
+                // when core re-shows a page by itself.
                 const DisplayPage *page = id(main_display).get_active_page();
                 if (page == id(menu_page)) {
                   id(menu_tap).execute();
@@ -480,20 +498,9 @@ touchscreen:
                 } else {
                   id(timer_view_tap).execute();
                 }
-                if (!id(tap_consumed)) id(pulse_touch_input).execute();
+                // Taps that no page wanted go through the double-tap handler.
+                if (!id(tap_consumed)) id(tap_primary).execute();
               }
-              return;
-            }
-
-            // On the now playing page: up -> presets, down -> clock, left/right ->
-            // previous/next track. Handled by page so it also works while playing.
-            if (id(swipe_local).state &&
-                id(main_display).get_active_page() == id(now_playing_page) &&
-                (is_up || is_down || is_left || is_right)) {
-              if (is_up)         id(v_show_actions_only).execute();
-              else if (is_down)  id(v_show_clock_only).execute();
-              else if (is_left)  id(swipe_playing_left_action).execute();
-              else               id(swipe_playing_right_action).execute();
               return;
             }
 
@@ -503,22 +510,100 @@ touchscreen:
             if (is_up)    id(pulse_swipe_up).execute();
             if (is_down)  id(pulse_swipe_down).execute();
 
-            // Optional local handling
-            if (id(swipe_local).state && (id(voice_assistant_phase) == ${voice_assist_idle_phase_id})) {
-              if (is_left)  id(swipe_left_action).execute();
-              if (is_right) id(swipe_right_action).execute();
-              if (is_up)    id(swipe_up_action).execute();
-              if (is_down)  id(swipe_down_action).execute();
-            }
+            // Swipes are routed by the page that is actually on screen, not by
+            // the voice-assistant phase: playback keeps the phase at "playing",
+            // and gating on it dropped the clock's up/down while letting
+            // left/right fall through to the track-skip actions.
+            //
+            //   now playing : up -> presets, down -> clock, left/right -> track
+            //   anything else: up/down -> v_up/v_down, left/right -> timer views
+            //
+            // Only an active voice session suppresses UI navigation.
+            if (id(swipe_local).state) {
+              const DisplayPage *page = id(main_display).get_active_page();
+              const bool on_media = (page == id(now_playing_page));
+              const bool va_busy = id(va).is_running() ||
+                                   id(voice_assistant_phase) == ${voice_assist_waiting_for_command_phase_id} ||
+                                   id(voice_assistant_phase) == ${voice_assist_listening_phase_id} ||
+                                   id(voice_assistant_phase) == ${voice_assist_thinking_phase_id} ||
+                                   id(voice_assistant_phase) == ${voice_assist_replying_phase_id};
 
-            if (id(swipe_local).state && (id(voice_assistant_phase) == ${voice_assist_playing_phase_id})) {
-              if (is_up)    id(swipe_playing_up_action).execute();
-              if (is_down)  id(swipe_playing_down_action).execute();
-              if (is_left)  id(swipe_playing_left_action).execute();
-              if (is_right) id(swipe_playing_right_action).execute();
+              char what[48];
+              snprintf(what, sizeof(what), "%s on %s", is_up ? "up" : is_down ? "down" : is_left ? "left" : "right",
+                       on_media ? "media" : "other");
+              id(last_swipe) = what;
+              id(last_swipe_ts).publish_state(what);
+
+              if (on_media) {
+                if (is_up)         id(v_show_actions_only).execute();
+                else if (is_down)  id(v_show_clock_only).execute();
+                else if (is_left)  id(swipe_playing_left_action).execute();
+                else if (is_right) id(swipe_playing_right_action).execute();
+                return;
+              }
+              if (!va_busy) {
+                if (is_up)         id(v_up).execute();
+                else if (is_down)  id(v_down).execute();
+                else if (is_left)  id(swipe_left_action).execute();
+                else if (is_right) id(swipe_right_action).execute();
+                return;
+              }
             }
 
 script:
+  # Single tap: silences a ringing timer, otherwise nothing.
+  # Double tap (within 500 ms): wakes the assistant, or stops listening and
+  # returns to the clock when it is already listening/replying.
+  - id: tap_primary
+    then:
+      - lambda: |-
+          const uint32_t now_ms = millis();
+          if (id(timer_ringing).state) {
+            id(tap_armed) = false;
+            id(tap_action) = 1;
+            return;
+          }
+          if (id(tap_armed) && (now_ms - id(tap_ms) < 500)) {
+            id(tap_armed) = false;
+            const bool va_active = id(va).is_running() ||
+                (id(voice_assistant_phase) != ${voice_assist_idle_phase_id});
+            id(tap_action) = va_active ? 2 : 3;
+            return;
+          }
+          id(tap_armed) = true;
+          id(tap_ms) = now_ms;
+          id(tap_action) = 0;
+      - if:
+          condition:
+            lambda: return id(tap_action) == 1;
+          then:
+            - script.execute: pulse_touch_input
+      - if:
+          condition:
+            lambda: return id(tap_action) == 2;
+          then:
+            - logger.log:
+                format: "double tap -> stop listening"
+                level: INFO
+            - voice_assistant.stop:
+            - delay: 300ms
+            - script.execute: set_idle_or_mute_phase
+            - script.execute: start_wake_word
+            - lambda: |-
+                id(show_clock) = true;
+                id(lt_view) = 0;
+                id(v_view) = 0;
+                id(main_display).show_page(simple_clock);
+                id(main_display).update();
+      - if:
+          condition:
+            lambda: return id(tap_action) == 3;
+          then:
+            - logger.log:
+                format: "double tap -> wake word"
+                level: INFO
+            - script.execute: pulse_touch_input
+
   - id: swipe_playing_up_action
     then:
       - media_player.volume_up: external_media_player
