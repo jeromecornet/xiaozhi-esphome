@@ -14,7 +14,7 @@ packages:
   clocks: !include ../clocks-ball_v2_interactive.yaml
   # now-playing mirror of a Home Assistant media_player (display only; audio
   # keeps playing on the real speaker)
-  now_playing: !include ../now_playing_ha.yaml
+  now_playing: !include ../now_playing.yaml
 
 globals:
   - id: tap_armed            # a first tap happened recently (waiting for a second)

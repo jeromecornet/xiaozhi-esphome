@@ -48,23 +48,20 @@ substitutions:
   simple_clock_accent_color: "26ed3a" # date line (green)
   simple_clock_status_color: "2e9bff" # top status row: wifi bars, timer count, battery (blue)
 
-  # Preset actions page (swipe up/down): the automation this button fires.
-  preset_news_automation: "automation.news"
+  # Local timezone for the clock. ESPHome bakes the zone into the firmware at
+  # compile time (it would otherwise use the build machine's), so set yours here.
+  timezone: "Etc/UTC"
 
-  # Local timezone for the clock (baked into the firmware at compile time).
-  timezone: "America/Toronto"
+  # Preset actions page (vertical swipe): default automation for the News button.
+  # Can also be changed at runtime from HA ("Preset News Automation" text entity).
+  preset_news_automation: "automation.preset_news"
 
-  # Now playing comes from Sendspin: the ball is a muted member of the Music
-  # Assistant group, so title/artist/album and the artwork arrive natively.
-  # Transport controls still go through HA to this entity.
-  media_entity: "media_player.kitchen_speaker_2"
-  # artwork size the Sendspin ALBUM image is resized to (matches the page)
-  albumsize: "156x156"
-  # how long the now playing page stays up after playback stops
+  # Now playing: the Music Assistant group this ball belongs to (used to keep the
+  # ball silent while the group plays) and how long the page lingers after a pause
+  # ("Now Playing Linger" number entity, in seconds).
+  ma_group_entity: "media_player.music_assistant_group"
   np_linger_seconds: "30"
-  # Music Assistant group the ball belongs to (used to keep it silent while the
-  # group plays, since MA applies the group volume to every member)
-  ma_group_entity: "media_player.kitchen_with_controls"
+  albumsize: "156x156" # Sendspin artwork size, matches the page layout
 
   # USE ONLINE OR LOCAL MODEL AND WALLPAPER IMAGES, IMAGES SHOULD BE PLACED IN: homeassistant/www/images/
   imagepath: "https://github.com/jeromecornet/xiaozhi-esphome/raw/main/images"

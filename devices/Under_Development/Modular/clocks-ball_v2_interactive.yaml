@@ -309,6 +309,20 @@ text_sensor:
       t.strftime(b, sizeof(b), "%Y-%m-%d %H:%M %Z");
       return std::string(b);
 
+text:
+  # Automation the News preset calls. Editable from HA, so the preset does not
+  # have to be re-flashed to point at a different automation.
+  - platform: template
+    name: "Preset News Automation"
+    id: preset_news_target
+    optimistic: true
+    restore_value: true
+    initial_value: ${preset_news_automation}
+    max_length: 64
+    mode: text
+    entity_category: config
+    icon: "mdi:robot"
+
 button:
   - platform: template
     name: "Cancel All Local Timers"
@@ -651,7 +665,7 @@ script:
             - homeassistant.action:
                 action: automation.trigger
                 data:
-                  entity_id: ${preset_news_automation}
+                  entity_id: !lambda 'return id(preset_news_target).state;'
                 on_error:
                   - logger.log:
                       format: "preset News automation.trigger failed: %s"

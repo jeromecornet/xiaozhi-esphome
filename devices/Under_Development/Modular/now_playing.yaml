@@ -1,12 +1,13 @@
 # Now-playing display fed by Sendspin (Ball v2 Interactive)
 #
-# The ball is only a display/remote: it joins the Music Assistant Sendspin group
-# (volume 0, so nothing is heard) and receives the group's metadata and artwork
+# The ball is only a display/remote: make it a *member* of a Music Assistant group
+# (muted, so nothing is heard) and it receives the group's metadata and artwork
 # natively over the Sendspin protocol — no HA polling, no MA API token, no extra
 # service. Title/artist/album come from the sendspin text sensors and the artwork
 # from the sendspin ALBUM image that the core already configures.
 #
-# Transport controls still go through Home Assistant to ${media_entity}.
+# Transport controls go through the Sendspin controller (they reach Music
+# Assistant directly, which works even when the HA entity is a group member).
 #
 # Layout: see display_pages-now_playing.yaml
 
@@ -121,6 +122,21 @@ switch:
     optimistic: true
     restore_mode: ALWAYS_ON
 
+number:
+  # How long the page stays up after playback stops (editable from HA).
+  - platform: template
+    name: "Now Playing Linger"
+    id: np_linger
+    optimistic: true
+    restore_value: true
+    initial_value: ${np_linger_seconds}
+    min_value: 0
+    max_value: 900
+    step: 5
+    unit_of_measurement: "s"
+    entity_category: config
+    icon: "mdi:timer-sand"
+
 button:
   - platform: template
     name: "Show Now Playing Page"
@@ -196,7 +212,7 @@ interval:
             id(np_paused_ms) = millis();
           const bool lingering =
               id(np_paused_ms) != 0 &&
-              (millis() - id(np_paused_ms) < ${np_linger_seconds} * 1000UL);
+              (millis() - id(np_paused_ms) < (uint32_t) (id(np_linger).state * 1000.0f));
 
           // no title is fine: the page still shows the artwork/notes and controls
           const bool ready = (playing || lingering);
