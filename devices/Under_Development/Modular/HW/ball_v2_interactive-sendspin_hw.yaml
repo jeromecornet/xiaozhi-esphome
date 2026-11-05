@@ -466,9 +466,14 @@ touchscreen:
                 // While playing this is intentionally a no-op on-device: core's
                 // touch_input handler ignores it in the playing phase, so a tap
                 // never interrupts playback.
-                // Timer pages handle the tap themselves (the status page asks for
-                // confirmation first); otherwise it is the usual tap.
-                id(timer_view_tap).execute();
+                // Route on the page that is displayed: the presets page hit-tests
+                // its buttons, the timer pages ask for confirmation first, and on
+                // the clock the tap is the usual one (wake word / silence ringing).
+                if (id(main_display).get_active_page() == id(menu_page)) {
+                  id(menu_tap).execute();
+                } else {
+                  id(timer_view_tap).execute();
+                }
                 if (!id(tap_consumed)) id(pulse_touch_input).execute();
               }
               return;

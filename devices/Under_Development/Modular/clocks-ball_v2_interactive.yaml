@@ -82,6 +82,9 @@ display:
     pages: !include display_pages-timer_set.yaml
   - id: !extend main_display
     pages: !include display_pages-timer_status.yaml
+  # Preset-actions page (vertical swipe).
+  - id: !extend main_display
+    pages: !include display_pages-menu.yaml
 
 select:
   - platform: template
@@ -258,6 +261,19 @@ text_sensor:
     id: lt_view_name
     entity_category: diagnostic
 
+  # outcome of the last preset action (was HA able to run the automation?)
+  - platform: template
+    name: "Preset Result"
+    id: preset_result
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    name: "Last Preset Tap"
+    id: preset_tap
+    entity_category: diagnostic
+    update_interval: never
+
   # what the device believes the local time is (timezone debugging)
   - platform: template
     name: "Local Time"
@@ -324,6 +340,14 @@ button:
             id(timer_ring_move).execute();
           }
           id(timer_ring_end).execute();
+
+  # Preset actions (also reachable from HA, and used to test the wiring)
+  - platform: template
+    name: "Preset: News"
+    id: menu_news_btn
+    icon: "mdi:newspaper-variant-outline"
+    on_press:
+      - script.execute: menu_action_news
 
   - platform: template
     name: "Set 1 Minute Timer"
@@ -470,6 +494,115 @@ script:
           }
 
   # --- vertical swipe pages: clock <-> now playing / presets -----------------
+  - id: v_show_clock
+    then:
+      - lambda: |-
+          id(v_view) = 0;
+          id(main_display).show_page(simple_clock);
+          id(main_display).update();
+
+  - id: v_show_actions
+    then:
+      - lambda: |-
+          id(v_view) = 2;
+          id(main_display).show_page(menu_page);
+          id(main_display).update();
+
+  # swipe up: leave any sub-page, otherwise the presets page
+  - id: v_up
+    then:
+      - if:
+          condition:
+            lambda: return id(v_view) != 0;
+          then:
+            - script.execute: v_show_clock
+          else:
+            - script.execute: v_show_actions
+
+  # swipe down: leave any sub-page, otherwise the presets page
+  - id: v_down
+    then:
+      - if:
+          condition:
+            lambda: return id(v_view) != 0;
+          then:
+            - script.execute: v_show_clock
+          else:
+            - script.execute: v_show_actions
+
+  - id: menu_tap
+    then:
+      - lambda: |-
+          id(tap_consumed) = true;
+          const int W = id(main_display).get_width();
+          const int H = id(main_display).get_height();
+          const int S = std::min(W, H);
+          const int cx = W / 2, cy = H / 2;
+          const int bw  = (int) (S * 0.60f);
+          const int bh  = (int) (S * 0.17f);
+          const int gap = (int) (S * 0.05f);
+          const int n   = 1;
+          const int total = n * bh + (n - 1) * gap;
+          const int bx  = cx - bw / 2;
+          const int y0  = cy - total / 2;
+
+          const int x = id(gs_last_x), y = id(gs_last_y);
+          char tapbuf[64];
+          snprintf(tapbuf, sizeof(tapbuf), "tap (%d,%d) box %d..%d x %d..%d", x, y,
+                   bx, bx + bw, y0, y0 + n * bh);
+          id(preset_tap).publish_state(tapbuf);
+          for (int i = 0; i < n; i++) {
+            const int by = y0 + i * (bh + gap);
+            if (x >= bx && x <= bx + bw && y >= by && y <= by + bh) {
+              ESP_LOGI("preset", "button %d pressed", i);
+              id(v_show_clock).execute();
+              if (i == 0) id(menu_action_news).execute();
+              return;
+            }
+          }
+          id(v_show_clock).execute();   // tap anywhere else closes the page
+
+  # Fire the Home Assistant automation for the "News" preset. entity_id comes
+  # from ${preset_news_automation} in the device YAML.
+  - id: menu_action_news
+    then:
+      - if:
+          condition:
+            lambda: return global_api_server != nullptr && global_api_server->is_connected();
+          then:
+            - lambda: 'ESP_LOGI("preset", "triggering ${preset_news_automation}");'
+            # NOTE: no capture_response (automation.trigger returns no response, HA
+            # rejects return_response=True) and no skip_condition (it must be a bool,
+            # which ESPHome's templated data: cannot express). automation.trigger
+            # still evaluates the automation's own conditions.
+            - lambda: 'id(preset_result).publish_state("news: fired");'
+            # Primary channel: an HA event. ESPHome button entities are stateless,
+            # so a *state* trigger on button.<device>_preset_news can never fire;
+            # an event trigger can.
+            - homeassistant.event:
+                event: esphome.preset_news
+                data:
+                  preset: "news"
+                  source: "xiaozhi-ball"
+            # Secondary: trigger the automation directly, if ${preset_news_automation}
+            # is the automation you want (best effort — it still evaluates its own
+            # conditions, which ESPHome cannot skip).
+            - homeassistant.action:
+                action: automation.trigger
+                data:
+                  entity_id: ${preset_news_automation}
+                on_error:
+                  - logger.log:
+                      format: "preset News automation.trigger failed: %s"
+                      args: [ 'error.c_str()' ]
+                      level: WARN
+          else:
+            - lambda: 'id(preset_result).publish_state("news: HA not connected");'
+            - logger.log:
+                format: "preset News: HA not connected"
+                level: WARN
+
+  # --- ring gesture (set page only) ----------------------------------------
   - id: timer_ring_begin
     then:
       - lambda: |-
@@ -799,13 +932,15 @@ script:
   # Wallpaper is pinned to ${clock_background_image} too, so swiping up no
   # longer cycles it (the Simple clock ignores the wallpaper anyway).
   # --- countdown + screen upkeep -------------------------------------------
-  - id: swipe_up_action
-    then: []
+  - id: swipe_up_action     # presets / back to clock
+    then:
+      - script.execute: v_up
 
   # The battery widget is always on for this build; swiping down no longer
   # toggles it (the switch stays available in HA for deliberate changes).
-  - id: swipe_down_action
-    then: []
+  - id: swipe_down_action   # presets / back to clock
+    then:
+      - script.execute: v_down
 
 interval:
   - interval: 250ms

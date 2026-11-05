@@ -1,0 +1,53 @@
+# display page: preset actions (Ball v2 Interactive)
+#
+# Opened/closed with a swipe up or down on the clock. Each row is a button that
+# fires a Home Assistant action from the device (see menu_action_* scripts in
+# clocks-ball_v2_interactive.yaml). Add an entry to the labels[] array here and a
+# matching branch in menu_tap / menu_action_* to grow the list.
+#
+#   +----------------------------------+
+#   |             ACTIONS              |   title
+#   |        +--------------+          |
+#   |        |    News      |          |   button (tap)
+#   |        +--------------+          |
+#   |      swipe or tap to close       |   hint
+#   +----------------------------------+
+      - id: menu_page
+        lambda: |-
+          const int W = it.get_width();
+          const int H = it.get_height();
+          const int S = std::min(W, H);
+          const int cx = W / 2;
+          const int cy = H / 2;
+
+          const Color accent_col = id(simple_clock_accent_color);
+          const Color status_col = id(simple_clock_status_color);
+          const Color dim_col    = accent_col * 60;
+          const Color fill_col   = Color(0x0C, 0x1A, 0x26);
+
+          it.fill(Color::BLACK);
+
+          static const char *const labels[] = {"News"};
+          const int n = (int) (sizeof(labels) / sizeof(labels[0]));
+
+          const int bw  = (int) (S * 0.60f);
+          const int bh  = (int) (S * 0.17f);
+          const int gap = (int) (S * 0.05f);
+          const int total = n * bh + (n - 1) * gap;
+          const int bx  = cx - bw / 2;
+          const int y0  = cy - total / 2;
+
+          it.printf(cx, cy - (int) (S * 0.34f), id(font_battery), status_col,
+                    TextAlign::CENTER, "ACTIONS");
+
+          for (int i = 0; i < n; i++) {
+            const int by = y0 + i * (bh + gap);
+            it.filled_rectangle(bx, by, bw, bh, fill_col);
+            it.rectangle(bx, by, bw, bh, status_col);
+            it.rectangle(bx + 1, by + 1, bw - 2, bh - 2, status_col);
+            it.printf(cx, by + bh / 2, id(font_battery), Color::WHITE,
+                      TextAlign::CENTER, "%s", labels[i]);
+          }
+
+          it.printf(cx, cy + (int) (S * 0.34f), id(font_battery), dim_col,
+                    TextAlign::CENTER, "swipe or tap to close");

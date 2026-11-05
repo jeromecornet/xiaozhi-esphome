@@ -48,6 +48,9 @@ substitutions:
   simple_clock_accent_color: "26ed3a" # date line (green)
   simple_clock_status_color: "2e9bff" # top status row: wifi bars, battery (blue)
 
+  # Preset actions page (vertical swipe): the automation the News button targets.
+  preset_news_automation: "automation.news"
+
   # Local timezone for the clock (baked into the firmware at compile time).
   timezone: "America/Toronto"
 
