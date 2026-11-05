@@ -27,14 +27,16 @@
 
           const Color time_col   = id(simple_clock_time_color);
           const Color accent_col = id(simple_clock_accent_color);
-          const Color dim_col    = accent_col * 60;   // ~24 % for "no data" states
+          const Color status_col = id(simple_clock_status_color);   // top status row
+          const Color dim_col    = accent_col * 60;                 // ~24 % for "no data"
+          const Color status_dim = status_col * 90;                 // ~35 % for idle row items
 
           it.fill(Color::BLACK);
 
           const bool show_time = id(clock_show_time).state;
           const bool show_date = id(clock_show_date).state;
           const bool h24       = id(clock_24h).state;
-          const bool secs      = id(clock_show_seconds).state;
+          // seconds are deliberately not shown on this face
 
           // ---------- round-safe usable width ----------
           // Widest fully-visible line at vertical offset dy, minus a safety margin.
@@ -60,10 +62,7 @@
               hh %= 12;
               if (hh == 0) hh = 12;
             }
-            if (secs)
-              snprintf(timebuf, sizeof(timebuf), "%02d:%02d:%02d", hh, now.minute, now.second);
-            else
-              snprintf(timebuf, sizeof(timebuf), "%02d:%02d", hh, now.minute);
+            snprintf(timebuf, sizeof(timebuf), "%02d:%02d", hh, now.minute);
 
             // "Mon 02 Nov" -> "MON 02 NOV"
             if (now.strftime(datebuf, sizeof(datebuf), "%a %d %b") == 0)
@@ -109,7 +108,7 @@
             for (int i = 0; i < bars; i++) {
               const int bh = bmax * (i + 1) / bars;
               it.filled_rectangle(left_x + i * (bw + gap), base_y - bh, bw, bh,
-                                  (i < level) ? accent_col : dim_col);
+                                  (i < level) ? status_col : status_dim);
             }
           }
 
@@ -140,7 +139,7 @@
             const int gap_txt = std::max(2, S / 80);
             const int x0      = right_x - (bw + nub + gap_txt + tw);
             const int y0      = row_y - bh / 2;
-            const Color bc    = have_batt ? accent_col : dim_col;
+            const Color bc    = have_batt ? status_col : status_dim;
 
             it.rectangle(x0, y0, bw, bh, bc);
             it.filled_rectangle(x0 + bw, y0 + (bh - std::max(2, bh / 2)) / 2,
@@ -152,7 +151,7 @@
               const int fw = (int) (iw * pct / 100.0f);
               if (iw > 0 && ih > 0 && fw > 0)
                 it.filled_rectangle(x0 + pad + 1, y0 + pad + 1, fw, ih,
-                                    (pct <= 20.0f) ? Color(0xD0, 0x00, 0x00) : accent_col);
+                                    (pct <= 20.0f) ? Color(0xD0, 0x00, 0x00) : status_col);
             }
 
             it.printf(x0 + bw + nub + gap_txt + tw / 2, row_y, id(font_battery), bc,
@@ -164,13 +163,23 @@
             const int max_w = std::min((int) (W * 0.92f), chord_w(0));
             int w = 0, xo = 0, bl = 0, h = 0;
             auto *tfont = id(font_clock_seg_small);
-            id(font_clock_seg_huge)->measure(timebuf, &w, &xo, &bl, &h);
+            id(font_clock_seg_xxl)->measure(timebuf, &w, &xo, &bl, &h);
             if (w <= max_w) {
-              tfont = id(font_clock_seg_huge);
+              tfont = id(font_clock_seg_xxl);
             } else {
-              id(font_clock_seg_big)->measure(timebuf, &w, &xo, &bl, &h);
-              if (w <= max_w)
-                tfont = id(font_clock_seg_big);
+              id(font_clock_seg_xl)->measure(timebuf, &w, &xo, &bl, &h);
+              if (w <= max_w) {
+                tfont = id(font_clock_seg_xl);
+              } else {
+                id(font_clock_seg_huge)->measure(timebuf, &w, &xo, &bl, &h);
+                if (w <= max_w) {
+                  tfont = id(font_clock_seg_huge);
+                } else {
+                  id(font_clock_seg_big)->measure(timebuf, &w, &xo, &bl, &h);
+                  if (w <= max_w)
+                    tfont = id(font_clock_seg_big);
+                }
+              }
             }
             it.printf(cx, cy - (int) (S * 0.005f), tfont,
                       time_ok ? time_col : dim_col, TextAlign::CENTER, "%s", timebuf);
@@ -181,3 +190,4 @@
             it.printf(cx, cy + (int) (S * 0.245f), id(font_big_date),
                       time_ok ? accent_col : dim_col, TextAlign::CENTER, "%s", datebuf);
           }
+

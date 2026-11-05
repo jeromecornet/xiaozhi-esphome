@@ -1,0 +1,3 @@
+# Local-only build-server notes and helpers — never commit
+LOCAL_BUILD.md
+.localbuild/

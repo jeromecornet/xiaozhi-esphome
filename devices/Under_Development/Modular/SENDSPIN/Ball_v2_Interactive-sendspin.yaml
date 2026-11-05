@@ -45,7 +45,11 @@ substitutions:
   # 6-digit hex, no leading '#'. Swap the two values to invert the palette.
 
   simple_clock_time_color: "ffc107" # big DSEG7 time digits (yellow)
-  simple_clock_accent_color: "26ed3a" # status row (wifi + battery) and date line (green)
+  simple_clock_accent_color: "26ed3a" # date line (green)
+  simple_clock_status_color: "2e9bff" # top status row: wifi bars, battery (blue)
+
+  # Local timezone for the clock (baked into the firmware at compile time).
+  timezone: "America/Toronto"
 
   # USE ONLINE OR LOCAL MODEL AND WALLPAPER IMAGES, IMAGES SHOULD BE PLACED IN: homeassistant/www/images/
   imagepath: "https://github.com/jeromecornet/xiaozhi-esphome/raw/main/images"
@@ -145,7 +149,7 @@ packages:
 micro_wake_word:
   id: mww
   models:
-    #    - okay_nabu
+    - okay_nabu
     #    - hey_jarvis
     #    - alexa
     #    - hey_mycroft
