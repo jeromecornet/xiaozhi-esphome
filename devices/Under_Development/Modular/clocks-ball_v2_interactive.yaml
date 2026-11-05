@@ -82,9 +82,16 @@ display:
     pages: !include display_pages-timer_set.yaml
   - id: !extend main_display
     pages: !include display_pages-timer_status.yaml
-  # Preset-actions page (vertical swipe).
+  # Preset-actions page and the now-playing page (both on the vertical swipe).
   - id: !extend main_display
     pages: !include display_pages-menu.yaml
+  # Drop the shared pack's now playing page and use ours instead, so the layout
+  # is identical no matter which code path shows it.
+  - id: !extend main_display
+    pages:
+      - id: !remove now_playing_page
+  - id: !extend main_display
+    pages: !include display_pages-now_playing.yaml
 
 select:
   - platform: template
@@ -218,6 +225,13 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
+  # true when the user swiped away from the now playing page (respected until the
+  # next playback starts)
+  - id: media_dismissed
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # vertical swipe pages: 0 clock, 1 now playing, 2 presets
   - id: v_view
     type: int
     restore_value: false
@@ -498,38 +512,78 @@ script:
     then:
       - lambda: |-
           id(v_view) = 0;
+          id(lt_view) = 0;          // leave any timer status page behind too
+          id(lt_confirm) = false;
           id(main_display).show_page(simple_clock);
+          id(main_display).update();
+
+  - id: v_show_media
+    then:
+      - lambda: |-
+          id(v_view) = 1;
+          id(lt_confirm) = false;
+          id(main_display).show_page(now_playing_page);
           id(main_display).update();
 
   - id: v_show_actions
     then:
       - lambda: |-
           id(v_view) = 2;
+          id(lt_confirm) = false;
           id(main_display).show_page(menu_page);
           id(main_display).update();
 
-  # swipe up: leave any sub-page, otherwise the presets page
+  # leaving the now playing page: remember the dismissal, then show the target
+  - id: v_show_clock_only
+    then:
+      - lambda: 'if (id(v_view) == 1) id(media_dismissed) = true;'
+      - script.execute: v_show_clock
+
+  - id: v_show_actions_only
+    then:
+      - lambda: 'if (id(v_view) == 1) id(media_dismissed) = true;'
+      - script.execute: v_show_actions
+
+  # swipe up: leave any sub-page, otherwise now playing (if something is) else presets
   - id: v_up
     then:
       - if:
           condition:
             lambda: return id(v_view) != 0;
           then:
+            - lambda: 'if (id(v_view) == 1) id(media_dismissed) = true;'
             - script.execute: v_show_clock
           else:
-            - script.execute: v_show_actions
+            - if:
+                condition:
+                  # anything worth showing: a known track, or currently playing
+                  lambda: return id(media_ready) || !id(np_title).empty();
+                then:
+                  - script.execute: v_show_media
+                else:
+                  - script.execute: v_show_actions
 
-  # swipe down: leave any sub-page, otherwise the presets page
+  # swipe down: from now playing go to the presets page, otherwise leave the
+  # sub-page / open the presets page from the clock
   - id: v_down
     then:
       - if:
           condition:
-            lambda: return id(v_view) != 0;
+            lambda: return id(v_view) == 1;
           then:
-            - script.execute: v_show_clock
-          else:
+            - lambda: 'id(media_dismissed) = true;'
             - script.execute: v_show_actions
+          else:
+            - if:
+                condition:
+                  lambda: return id(v_view) != 0;
+                then:
+                  - script.execute: v_show_clock
+                else:
+                  - script.execute: v_show_actions
 
+  # Hit-test the buttons on the actions page. Geometry must match
+  # display_pages-menu.yaml.
   - id: menu_tap
     then:
       - lambda: |-

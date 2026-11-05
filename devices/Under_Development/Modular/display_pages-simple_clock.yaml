@@ -217,6 +217,18 @@
                       time_ok ? accent_col : dim_col, TextAlign::CENTER, "%s", datebuf);
           }
 
+          // ---------- media hint: swipe up/down opens the now playing page ----------
+          if (id(media_ready)) {
+            const int ay = cy + (int) (S * 0.365f);
+            const int aw = std::max(3, S / 70);
+            const int ah = std::max(2, S / 90);
+            const int ox = std::max(7, S / 28);
+            it.line(cx - ox - aw, ay + ah, cx - ox, ay - ah, status_col);
+            it.line(cx - ox, ay - ah, cx - ox + aw, ay + ah, status_col);
+            it.line(cx + ox - aw, ay - ah, cx + ox, ay + ah, status_col);
+            it.line(cx + ox, ay + ah, cx + ox + aw, ay - ah, status_col);
+          }
+
           // ---------- soonest timer, small line at the bottom ----------
           {
             uint32_t rem = 0;

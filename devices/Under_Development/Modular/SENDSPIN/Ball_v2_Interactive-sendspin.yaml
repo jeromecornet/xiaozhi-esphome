@@ -51,6 +51,14 @@ substitutions:
   # Preset actions page (vertical swipe): the automation the News button targets.
   preset_news_automation: "automation.news"
 
+  # Now playing comes from Sendspin: the ball is a muted member of the Music
+  # Assistant group, so title/artist/album and the artwork arrive natively.
+  # Transport controls go through the Sendspin controller.
+  media_entity: "media_player.kitchen_speaker_2"   # HA entity for reference
+  albumsize: "156x156"                             # Sendspin artwork size
+  np_linger_seconds: "30"                          # linger after a pause
+  ma_group_entity: "media_player.kitchen_with_controls"  # group the ball belongs to
+
   # Local timezone for the clock (baked into the firmware at compile time).
   timezone: "America/Toronto"
 

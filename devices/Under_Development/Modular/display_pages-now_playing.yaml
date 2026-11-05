@@ -1,0 +1,155 @@
+# display page: now playing (Ball v2 Interactive, 240 px round panel)
+#
+# This REPLACES the shared pack's now_playing_page (removed in
+# clocks-ball_v2_interactive.yaml), so every path that shows the now playing page
+# -- the voice-assistant phase switch, the media player triggers and our own
+# swipe -- lands on this layout.
+#
+# Geometry must stay in sync with the media_tap hit-test in now_playing_ha.yaml:
+#   art    0.65 * S  centred            (156 px on 240)  tap -> play/pause
+#   text   centred at cy - 0.417 * S     "Artist - Title" marquee in the top cap
+#   prev   0.125S x 0.15S  at x 0.025S   left cap
+#   next   same, mirrored                right cap
+#   play   0.167S x 0.117S centred at cy + 0.300S
+#
+# Tap zones are deliberately larger than the drawn buttons (see media_tap):
+# left third -> prev, right third -> next, bottom third -> play/pause.
+#
+#   ╭───────────────────────────╮
+#   │   Artist - Title  →→→     │
+#   ╭───────────────────────────╮
+#   │ ◀ │                       │ ▶
+#   │   │      album art        │
+#   │   │        156×156        │
+#   │   │                       │
+#     │         ⏵ / ⏸          │
+#     ╰────────────────────────╯
+      - id: now_playing_page
+        lambda: |-
+          const int W = it.get_width();
+          const int H = it.get_height();
+          const int S = std::min(W, H);
+          const int cx = W / 2;
+          const int cy = H / 2;
+          const int r  = S / 2;
+
+          const Color time_col   = id(simple_clock_time_color);
+          const Color accent_col = id(simple_clock_accent_color);
+          const Color status_col = id(simple_clock_status_color);
+          const Color dim_col    = accent_col * 60;
+          const Color fill_col   = Color(0x0C, 0x1A, 0x26);
+
+          it.fill(Color::BLACK);
+
+          // ---------- album art (Sendspin ALBUM image), inscribed square ----------
+          const int art = (int) (S * 0.65f);
+          if (id(sendspin_album_art_valid)) {
+            it.image(cx, cy, id(sendspin_album_art), ImageAlign::CENTER);
+          } else {
+            // No artwork from the server: draw a music note so it is obvious that
+            // something is playing rather than showing an empty box.
+            const Color note_col = accent_col;
+            const int head_r = std::max(6, S / 20);
+            const int stem_w = std::max(3, S / 55);
+            const int stem_h = (int) (S * 0.20f);
+
+            it.circle(cx, cy, art / 2, dim_col);           // frame
+
+            // big note
+            const int h1x = cx - (int) (S * 0.055f);
+            const int h1y = cy + (int) (S * 0.075f);
+            it.filled_circle(h1x, h1y, head_r, note_col);
+            it.filled_rectangle(h1x + head_r - stem_w, h1y - stem_h, stem_w, stem_h, note_col);
+            // flag on the stem
+            for (int i = 0; i < (int) (S * 0.07f); i++) {
+              const int w = (int) (S * 0.07f) - i;
+              it.filled_rectangle(h1x + head_r - stem_w, h1y - stem_h + i, w, 1, note_col);
+            }
+
+            // small note, beamed with the first one
+            const int h2x = cx + (int) (S * 0.085f);
+            const int h2y = cy - (int) (S * 0.005f);
+            const int head2_r = (int) (head_r * 0.85f);
+            it.filled_circle(h2x, h2y, head2_r, note_col);
+            it.filled_rectangle(h2x + head2_r - stem_w, h2y - stem_h + (int) (S * 0.05f),
+                                stem_w, stem_h - (int) (S * 0.05f), note_col);
+            it.filled_rectangle(h1x + head_r - stem_w, h1y - stem_h,
+                                h2x + head2_r - (h1x + head_r - stem_w),
+                                std::max(3, S / 40), note_col);
+          }
+
+          // ---------- "Artist - Title" marquee in the top cap ----------
+          {
+            std::string line = id(np_artist);
+            if (!line.empty() && !id(np_title).empty())
+              line += " - ";
+            line += id(np_title);
+
+            const int ty = cy - (int) (S * 0.417f);
+            const int dy = (int) (S * 0.417f);
+            const int hw = (int) sqrtf((float) std::max(0, r * r - dy * dy));
+            const int window = std::max(40, 2 * hw - 20);
+
+            int tw = 0, xo = 0, bl = 0, th = 0;
+            id(font_big_date)->measure(line.c_str(), &tw, &xo, &bl, &th);
+
+            if (tw <= window) {
+              it.printf(cx, ty, id(font_big_date), Color::WHITE,
+                        TextAlign::CENTER, "%s", line.c_str());
+            } else {
+              // overflows into the bezel on both sides, which hides the ends
+              it.printf(cx + (int) id(np_marquee_x), ty, id(font_big_date),
+                        Color::WHITE, TextAlign::CENTER, "%s", line.c_str());
+            }
+          }
+
+          // ---------- controls ----------
+          const int bw  = (int) (S * 0.125f);
+          const int bh  = (int) (S * 0.150f);
+          const int by  = cy - bh / 2;
+          const int pv  = (int) (S * 0.025f);
+          const int pw  = (int) (S * 0.167f);
+          const int ph  = (int) (S * 0.117f);
+          const int px  = cx - pw / 2;
+          const int py  = cy + (int) (S * 0.300f);
+
+          const int iw = std::max(8, (int) (S * 0.058f));
+          const int ih = std::max(8, (int) (S * 0.062f));
+          const int bar = std::max(2, S / 90);
+
+          auto tri_right = [&](int x0, int yc, int w, int h, Color c) {
+            for (int i = 0; i < w; i++) {
+              const int hh = (h * (w - i)) / w;
+              it.filled_rectangle(x0 + i, yc - hh / 2, 1, hh, c);
+            }
+          };
+          auto tri_left = [&](int x0, int yc, int w, int h, Color c) {
+            for (int i = 0; i < w; i++) {
+              const int hh = (h * (i + 1)) / w;
+              it.filled_rectangle(x0 + i, yc - hh / 2, 1, hh, c);
+            }
+          };
+
+          // prev: |◀ in the left cap
+          {
+            const int cxp = pv + bw / 2, cyp = by + bh / 2;
+            it.filled_rectangle(cxp - iw / 2, cyp - ih / 2, bar, ih, status_col);
+            tri_left(cxp - iw / 2 + bar + 1, cyp, iw - bar - 1, ih, status_col);
+          }
+          // next: ▶| in the right cap
+          {
+            const int cxp = S - pv - bw / 2, cyp = by + bh / 2;
+            tri_right(cxp - iw / 2, cyp, iw - bar - 1, ih, status_col);
+            it.filled_rectangle(cxp + iw / 2 - bar, cyp - ih / 2, bar, ih, status_col);
+          }
+          // play / pause in the bottom cap
+          {
+            const int cxp = cx, cyp = py + ph / 2;
+            if (id(media_playing)) {
+              const int pb = std::max(3, iw / 3);
+              it.filled_rectangle(cxp - pb - bar / 2, cyp - ih / 2, pb, ih, status_col);
+              it.filled_rectangle(cxp + bar / 2 + 1, cyp - ih / 2, pb, ih, status_col);
+            } else {
+              tri_right(cxp - iw / 2, cyp, iw, ih, status_col);
+            }
+          }

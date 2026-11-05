@@ -1,0 +1,339 @@
+# Now-playing display fed by Sendspin (Ball v2 Interactive)
+#
+# The ball is only a display/remote: it joins the Music Assistant Sendspin group
+# (volume 0, so nothing is heard) and receives the group's metadata and artwork
+# natively over the Sendspin protocol — no HA polling, no MA API token, no extra
+# service. Title/artist/album come from the sendspin text sensors and the artwork
+# from the sendspin ALBUM image that the core already configures.
+#
+# Transport controls still go through Home Assistant to ${media_entity}.
+#
+# Layout: see display_pages-now_playing.yaml
+
+globals:
+  - id: media_playing
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # playing AND we have a title: otherwise the page stays hidden
+  - id: media_ready
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: np_title
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: np_artist
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: np_marquee_x
+    type: float
+    restore_value: false
+    initial_value: '0'
+  # media input of the mixer is ducked (ball silent while it is a group member)
+  - id: np_media_ducked
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # when the artwork last became valid, and when the last metadata change landed
+  # (used to drop stale artwork for a track that has none)
+  - id: np_art_at_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: np_art_valid_prev
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # millis() of the last playing -> not-playing transition, 0 while playing or
+  # when nothing has played yet
+  - id: np_paused_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: np_last_tap
+    type: std::string
+    restore_value: false
+    initial_value: '"none"'
+  # last swipe gesture + the page it happened on (swipe-routing debugging)
+  - id: last_swipe
+    type: std::string
+    restore_value: false
+    initial_value: '"none"'
+
+text_sensor:
+  # State of the Music Assistant group the ball belongs to. While that group is
+  # playing the ball is a *member*, so Music Assistant drives its volume — this is
+  # what the mute guard below watches.
+  - platform: homeassistant
+    id: group_state
+    entity_id: ${ma_group_entity}
+    internal: true
+    on_value:
+      - component.update: main_display
+
+  - platform: template
+    name: "Now Playing Mirror"
+    id: np_status
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    name: "Now Playing Source"
+    id: np_source
+    entity_category: diagnostic
+    update_interval: never
+
+  # which zone the last tap on the media page hit (tap-path debugging)
+  - platform: template
+    name: "Page View"
+    id: np_view
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      char b[64];
+      snprintf(b, sizeof(b), "v=%d ready=%d dismissed=%d", id(v_view),
+               id(media_ready) ? 1 : 0, id(media_dismissed) ? 1 : 0);
+      return std::string(b);
+
+  - platform: template
+    name: "Last Swipe"
+    id: last_swipe_ts
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    name: "Media Last Tap"
+    id: np_last_tap_ts
+    entity_category: diagnostic
+    update_interval: never
+
+switch:
+  # Keep the ball silent while it is a member of the MA group (it is a display
+  # there). Turn this off if you want to use the ball as a speaker while grouped.
+  - platform: template
+    name: "Ball Silent In Group"
+    id: ball_silent_in_group
+    icon: "mdi:volume-off"
+    entity_category: config
+    optimistic: true
+    restore_mode: ALWAYS_ON
+
+button:
+  - platform: template
+    name: "Show Now Playing Page"
+    id: np_show_btn
+    icon: "mdi:music-note"
+    entity_category: diagnostic
+    on_press:
+      - script.execute: v_show_media
+  - platform: template
+    name: "Next Track"
+    id: np_next_btn
+    icon: "mdi:skip-next"
+    entity_category: diagnostic
+    on_press:
+      - script.execute: media_next
+  - platform: template
+    name: "Previous Track"
+    id: np_prev_btn
+    icon: "mdi:skip-previous"
+    entity_category: diagnostic
+    on_press:
+      - script.execute: media_prev
+  - platform: template
+    name: "Kitchen Speaker Play Pause"
+    id: np_toggle_btn
+    icon: "mdi:play-pause"
+    entity_category: diagnostic
+    on_press:
+      - script.execute: media_toggle
+
+interval:
+  # Sendspin pushes title/artist/album; poll them (cheap) and mirror into the
+  # globals the page reads, then show/hide the page.
+  - interval: 500ms
+    then:
+      - lambda: |-
+          const std::string title = id(sendspin_title).has_state() ? id(sendspin_title).state : "";
+          const std::string artist = id(sendspin_artist).has_state() ? id(sendspin_artist).state : "";
+          // Sendspin's own player state: the ball is a muted member of the MA
+          // group, so PLAYING here means the group is playing and we have the
+          // group's metadata/artwork.
+          const bool playing =
+              id(sendspin_group_media_player).state ==
+              media_player::MEDIA_PLAYER_STATE_PLAYING;
+
+          // --- artwork freshness -------------------------------------------
+          // Sendspin only pushes an image when the server has one, so with no art
+          // the previous bitmap stays valid. When the metadata changes for a new
+          // track, drop artwork older than that change so the placeholder shows
+          // (a fresh image arriving afterwards sets the flag again by itself).
+          const bool art_valid = id(sendspin_album_art_valid);
+          if (art_valid && !id(np_art_valid_prev))
+            id(np_art_at_ms) = millis();
+          id(np_art_valid_prev) = art_valid;
+
+          const bool title_changed = (title != id(np_title));
+          const bool artist_changed = (artist != id(np_artist));
+          if ((title_changed || artist_changed) && art_valid &&
+              (int32_t) (id(np_art_at_ms) - millis()) < -1500) {
+            id(sendspin_album_art_valid) = false;
+            id(np_art_at_ms) = 0;
+          }
+          id(np_title) = title;
+          id(np_artist) = artist;
+          if (title_changed)
+            id(np_marquee_x) = 0.0f;     // restart the marquee on a new track
+
+          // linger: after a pause keep the page up for ${np_linger_seconds}s
+          const bool was_playing = id(media_playing);
+          if (playing)
+            id(np_paused_ms) = 0;
+          else if (was_playing)
+            id(np_paused_ms) = millis();
+          const bool lingering =
+              id(np_paused_ms) != 0 &&
+              (millis() - id(np_paused_ms) < ${np_linger_seconds} * 1000UL);
+
+          // no title is fine: the page still shows the artwork/notes and controls
+          const bool ready = (playing || lingering);
+          const bool ready_changed = (ready != id(media_ready));
+          const bool playing_changed = (playing != id(media_playing));
+          id(media_playing) = playing;
+          id(media_ready) = ready;
+
+          if (ready_changed) {
+            if (ready)
+              id(media_dismissed) = false;      // a new playback brings the page back
+            if (!ready && id(v_view) == 1)
+              id(v_show_clock).execute();
+          }
+          // keep v_view in sync with what is actually on screen (core re-shows
+          // this page on track changes / phase switches)
+          if (id(main_display).get_active_page() == id(now_playing_page) &&
+              id(v_view) != 1)
+            id(v_view) = 1;
+          // and bring the page back on a fresh playback unless it was dismissed
+          if (ready && !id(media_dismissed) && id(v_view) == 0)
+            id(v_show_media).execute();
+          if (id(v_view) == 1 && (ready_changed || playing_changed || title_changed || artist_changed))
+            id(main_display).update();
+
+  # Mute guard. MA applies the group volume to every member, so the ball's own
+  # volume cannot be used to keep it quiet (that would mute the group). Instead
+  # duck the *media* source of the local mixer: announcements and VA replies stay
+  # audible, the group volume is untouched.
+  - interval: 1s
+    then:
+      - lambda: |-
+          const std::string gs = id(group_state).has_state() ? id(group_state).state : "";
+          const bool grouped = (gs == "playing" || gs == "paused" || gs == "buffering");
+          const bool want_mute = id(ball_silent_in_group).state && grouped;
+          if (want_mute == id(np_media_ducked))
+            return;
+          id(np_media_ducked) = want_mute;
+          // 80 dB reduction is effectively silent; 0 restores the media path
+          id(media_mixing_input).apply_ducking(want_mute ? 80 : 0, 0);
+          ESP_LOGW("media", "media path %s (group '%s')",
+                   want_mute ? "ducked (ball silent)" : "restored", gs.c_str());
+
+  - interval: 5s
+    then:
+      - lambda: |-
+          char b[220];
+          snprintf(b, sizeof(b), "%s | title:%s | artist:%s | art:%s | phase:%d | grp:%s ducked:%d",
+                   id(media_playing) ? "playing" : "idle", id(np_title).c_str(),
+                   id(np_artist).c_str(),
+                   id(sendspin_album_art_valid) ? "yes" : "no",
+                   (int) id(sendspin_group_media_player).state,
+                   id(group_state).has_state() ? id(group_state).state.c_str() : "?",
+                   id(np_media_ducked) ? 1 : 0);
+          id(np_status).publish_state(b);
+          id(np_source).publish_state(id(media_playing) ? "sendspin" : "(nothing playing)");
+
+  # marquee: only moves while the page is visible and the line is too wide
+  - interval: 150ms
+    then:
+      - lambda: |-
+          if (id(v_view) != 1 || id(np_title).empty())
+            return;
+          std::string line = id(np_artist);
+          if (!line.empty() && !id(np_title).empty())
+            line += " - ";
+          line += id(np_title);
+          if (line.empty())
+            return;
+
+          const int W = id(main_display).get_width();
+          const int S = std::min(W, id(main_display).get_height());
+          const int dy = (int) (S * 0.417f);
+          const int hw = (int) sqrtf((float) std::max(0, (S * S) / 4 - dy * dy));
+          const int window = std::max(40, 2 * hw - 20);
+
+          int tw = 0, xo = 0, bl = 0, th = 0;
+          id(font_big_date)->measure(line.c_str(), &tw, &xo, &bl, &th);
+          if (tw <= window) {
+            id(np_marquee_x) = 0.0f;
+            return;
+          }
+          id(np_marquee_x) -= 4.0f;        // ~27 px/s at 150 ms per tick
+          if (id(np_marquee_x) < -(tw / 2.0f + 8.0f))
+            id(np_marquee_x) = window / 2.0f + 8.0f;
+          id(main_display).update();
+
+script:
+  # Transport goes through the Sendspin controller: it speaks to Music Assistant
+  # directly, so it works even when HA's media_player entity is a group member
+  # that MA refuses or redirects commands for.
+  - id: media_prev
+    then:
+      - media_player.previous: sendspin_group_media_player
+  - id: media_next
+    then:
+      - media_player.next: sendspin_group_media_player
+  - id: media_toggle
+    then:
+      # explicit play/pause rather than toggle: while idle (or when the ball is not
+      # in the group yet) toggle can be a no-op, and we want "play" to resume the
+      # last queue item.
+      - if:
+          condition:
+            lambda: return id(media_playing);
+          then:
+            - media_player.pause: sendspin_group_media_player
+          else:
+            - media_player.play: sendspin_group_media_player
+
+  # Hit-test the controls. Geometry must match display_pages-now_playing.yaml.
+  # Zones are thirds of the screen, not the drawn buttons.
+  - id: media_tap
+    then:
+      - lambda: |-
+          id(tap_consumed) = true;
+          const int W = id(main_display).get_width();
+          const int H = id(main_display).get_height();
+          const int x = id(gs_last_x), y = id(gs_last_y);
+          const int third_x = W / 3;
+          const int two_thirds_x = (W * 2) / 3;
+          const int two_thirds_y = (H * 2) / 3;
+
+          char zone[64];
+          if (y >= two_thirds_y) {
+            snprintf(zone, sizeof(zone), "play/pause bottom (%d,%d)", x, y);
+            id(media_toggle).execute();
+          } else if (x < third_x) {
+            snprintf(zone, sizeof(zone), "prev left (%d,%d)", x, y);
+            id(media_prev).execute();
+          } else if (x > two_thirds_x) {
+            snprintf(zone, sizeof(zone), "next right (%d,%d)", x, y);
+            id(media_next).execute();
+          } else {
+            snprintf(zone, sizeof(zone), "play/pause middle (%d,%d)", x, y);
+            id(media_toggle).execute();
+          }
+          ESP_LOGI("media", "tap -> %s | v_view=%d", zone, id(v_view));
+          id(np_last_tap) = zone;
+          id(np_last_tap_ts).publish_state(zone);
