@@ -252,11 +252,13 @@ media_player:
     volume_min: 0.5
     volume_max: 0.8
 
-    # Keep VA reply volume/mute in step with the main player
+    # Keep VA reply volume/mute in step with the main player, but never let a low
+    # main volume silence the assistant: Music Assistant can drive this player to 0
+    # (the ball is a muted group member), and the replies would go inaudible.
     on_volume:
       - media_player.volume_set:
           id: tts_media_player
-          volume: !lambda return x;
+          volume: !lambda return std::max(0.5f, x);
     on_mute:
       - media_player.mute: tts_media_player
     on_unmute:
