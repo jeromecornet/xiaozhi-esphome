@@ -125,37 +125,6 @@ select:
           then:
             - script.execute: show_clock_page
 
-  - platform: template
-    entity_category: config
-    name: "Clock Wallpaper (Online)"
-    id: clock_wallpaper_image
-    icon: "mdi:image"
-    optimistic: true
-    # Not restored: always boot on the wallpaper from the device YAML.
-    restore_value: false
-    options:
-      - clock
-      - hacker
-      - mission
-      - neonwaves
-      - redmarble
-      - Rolex
-      - starrysky
-      - waves
-      - tron
-      - chip
-      - waterdrops
-    initial_option: ${clock_background_image}
-    on_value:
-      - online_image.set_url:
-          id: clock_background
-          url: !lambda |-
-            std::string base = "${imagepath}/Other/"
-                               "${screenwidth}x${screenheight}/";
-            return base + std::string(x) + ".png";
-          update: true
-      - component.update: main_display
-
 # ---------------------------------------------------------------------------
 # Local timers, set by dragging around the rim ("ring gesture")
 #
@@ -402,7 +371,24 @@ time:
   - id: !extend homeassistant_time
     timezone: ${timezone}
 
+# Settings only the other clock faces use: kept functional (those pages still read
+# them) but no longer exposed to Home Assistant, because the "Simple" face has a
+# fixed palette and wallpaper, no seconds and no dots.
+light:
+  - id: !extend clock_color_picker
+    internal: true
+
+number:
+  - id: !extend clock_delay_seconds
+    internal: true
+
 switch:
+  - id: !extend clock_show_seconds
+    internal: true
+  - id: !extend clock_show_dots
+    internal: true
+  - id: !extend clock_show_wallpaper
+    internal: true
   # The Simple clock draws the battery widget whenever this switch is on.
   # The shared core defaults to RESTORE_DEFAULT_ON, which keeps it OFF once it
   # has been toggled off; force it on at every boot instead.
