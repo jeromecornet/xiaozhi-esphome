@@ -65,16 +65,6 @@ globals:
     initial_value: '"none"'
 
 text_sensor:
-  # State of the Music Assistant group the ball belongs to. While that group is
-  # playing the ball is a *member*, so Music Assistant drives its volume — this is
-  # what the mute guard below watches.
-  - platform: homeassistant
-    id: group_state
-    entity_id: ${ma_group_entity}
-    internal: true
-    on_value:
-      - component.update: main_display
-
   - platform: template
     name: "Now Playing Mirror"
     id: np_status
@@ -112,11 +102,12 @@ text_sensor:
     update_interval: never
 
 switch:
-  # Keep the ball silent while it is a member of the MA group (it is a display
-  # there). Turn this off if you want to use the ball as a speaker while grouped.
+  # The ball is a display: while it is playing anything (i.e. it is a member of a
+  # Music Assistant group) its own audio path is muted. Turn this off when you
+  # want to use the ball as a speaker instead.
   - platform: template
-    name: "Ball Silent In Group"
-    id: ball_silent_in_group
+    name: "Mute Ball Playback"
+    id: ball_mute_playback
     icon: "mdi:volume-off"
     entity_category: config
     optimistic: true
@@ -245,16 +236,17 @@ interval:
   - interval: 1s
     then:
       - lambda: |-
-          const std::string gs = id(group_state).has_state() ? id(group_state).state : "";
-          const bool grouped = (gs == "playing" || gs == "paused" || gs == "buffering");
-          const bool want_mute = id(ball_silent_in_group).state && grouped;
+          // "playing" here means the ball is receiving a group stream
+          const bool playing =
+              id(sendspin_group_media_player).state ==
+              media_player::MEDIA_PLAYER_STATE_PLAYING;
+          const bool want_mute = id(ball_mute_playback).state && playing;
           if (want_mute == id(np_media_ducked))
             return;
           id(np_media_ducked) = want_mute;
           // 80 dB reduction is effectively silent; 0 restores the media path
           id(media_mixing_input).apply_ducking(want_mute ? 80 : 0, 0);
-          ESP_LOGW("media", "media path %s (group '%s')",
-                   want_mute ? "ducked (ball silent)" : "restored", gs.c_str());
+          ESP_LOGW("media", "ball playback %s", want_mute ? "muted" : "unmuted");
 
   - interval: 5s
     then:
@@ -265,7 +257,7 @@ interval:
                    id(np_artist).c_str(),
                    id(sendspin_album_art_valid) ? "yes" : "no",
                    (int) id(sendspin_group_media_player).state,
-                   id(group_state).has_state() ? id(group_state).state.c_str() : "?",
+                   id(ball_mute_playback).state ? "on" : "off",
                    id(np_media_ducked) ? 1 : 0);
           id(np_status).publish_state(b);
           id(np_source).publish_state(id(media_playing) ? "sendspin" : "(nothing playing)");
